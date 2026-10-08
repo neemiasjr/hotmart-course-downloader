@@ -1,0 +1,16 @@
+# Ambiente e IDE
+.venv/
+__pycache__/
+.idea/
+.DS_Store
+
+# Downloads e logs locais (não versionar)
+Cursos/
+[0-9].*/
+temp/
+log.txt
+api_response_debug.json
+
+# Artefatos locais de execução
+*.part.mp4
+.progress.json
