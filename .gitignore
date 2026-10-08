@@ -14,3 +14,5 @@ api_response_debug.json
 # Artefatos locais de execução
 *.part.mp4
 .progress.json
+
+config_cursos.py
