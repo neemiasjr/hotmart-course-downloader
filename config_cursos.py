@@ -24,6 +24,7 @@ CURSOS_PRODUCT_IDS = {
 QUALIDADE_VIDEO = None
 
 # Escopo opcional (None = perguntar ao rodar o script)
+# Tópicos: números da lista "Módulos / tópicos" (ex.: 5 ou [1, 2] ou "1-2" — com ASPAS!)
 TOPICOS_INDICES = None
 AULAS_INDICES = None
 AULA_VIDEO = None
@@ -33,3 +34,12 @@ PAUSA_ENTRE_VIDEOS = 0
 MEDIR_DURACAO_VIDEO = False
 DOWNLOAD_PARALELO = 1
 API_PARALELO = 6
+
+# Pós-processamento (HLS da Hotmart costuma gerar quadros duplicados / movimento "robótico")
+CORRIGIR_FLUIDAO_VIDEO = True
+FLUIDAO_CRF = 20
+FLUIDAO_PRESET = "faster"
+FLUIDAO_LIMIAR_IRREGULAR = 0.08
+
+# Correção em lote: python corrigir_sync_pasta.py Cursos
+# Log: Cursos/fluid-correcao.log | retomada: Cursos/.fluid-correcao.json

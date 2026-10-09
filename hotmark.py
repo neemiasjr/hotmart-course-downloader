@@ -41,6 +41,7 @@ from bs4 import BeautifulSoup  # pip install beautifulsoup4
 import youtube_dl  # pip install youtube_dl
 import subprocess
 import glob
+import statistics
 import unicodedata
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -174,6 +175,97 @@ def _arquivo_pronto(path, min_bytes=1024):
         return False
 
 
+def _duracao_mp4_local(path):
+    """Duração do arquivo em segundos, ou None."""
+    if not _arquivo_pronto(path):
+        return None
+    try:
+        dur = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1', path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        if dur.returncode != 0:
+            return None
+        return float((dur.stdout or '').strip())
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _mp4_valido_ffprobe(path):
+    """True se o .mp4 abre no ffprobe e tem duração plausível (não truncado)."""
+    if not _arquivo_pronto(path):
+        return False
+    try:
+        probe = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        if probe.returncode != 0 or 'video' not in (probe.stdout or '').lower():
+            return False
+        local = _duracao_mp4_local(path)
+        return local is not None and local > 0.5
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _duracao_local_suficiente(path, duracao_esperada, fracao_minima=0.90):
+    """False se o arquivo existe mas é claramente mais curto que a aula no site."""
+    if not duracao_esperada or duracao_esperada < 60:
+        return True
+    local = _duracao_mp4_local(path)
+    if local is None:
+        return False
+    return local >= float(duracao_esperada) * fracao_minima
+
+
+def _duracao_esperada_registro_video(video_row):
+    if not video_row or len(video_row) < 4:
+        return None
+    try:
+        val = float(video_row[3])
+        return val if val > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _video_arquivo_pronto(
+    path, verificar_completo=False, duracao_esperada=None, fracao_duracao_minima=0.90,
+):
+    if not path.lower().endswith('.mp4'):
+        return _arquivo_pronto(path)
+    if verificar_completo:
+        if not _mp4_valido_ffprobe(path):
+            return False
+        if not _duracao_local_suficiente(path, duracao_esperada, fracao_duracao_minima):
+            return False
+    return _arquivo_pronto(path)
+
+
+def _nome_arquivo_corresponde_aula(basename, page_order, lesson_name):
+    """Reconhece vídeo na raiz do módulo (layout achatado ou renomeado)."""
+    base = basename.lower()
+    if '.part.' in base or base.endswith('.part'):
+        return False
+    alvo = _prefixo_aula(page_order, lesson_name).lower()
+    if base.startswith(alvo):
+        return True
+    slug_aula = slugify(lesson_name)
+    slug_arq = slugify(os.path.splitext(basename)[0])
+    if slug_aula and len(slug_aula) >= 8 and slug_aula in slug_arq:
+        return True
+    return False
+
+
 def _nome_arquivo_seguro(nome):
     return re.sub(r'[<>:"/\\|?*]', '', (nome or '')).strip()
 
@@ -231,11 +323,26 @@ def _caminho_video_padrao(pasta_aula_legada, indice):
 
 def _video_ja_baixado(
     folder_topico, page_order, lesson_name, indice,
-    media_name=None, total_videos=1,
+    media_name=None, total_videos=1, verificar_completo=False,
+    duracao_esperada=None, fracao_duracao_minima=0.90,
+    qualidade_desejada=0,
 ):
     """
     True se o vídeo já existe (pasta do tópico ou layout antigo por aula).
+    Com verificar_completo, usa ffprobe (ignora .mp4 truncado/corrompido).
     """
+
+    def _pronto(path):
+        if not _video_arquivo_pronto(
+            path, verificar_completo, duracao_esperada, fracao_duracao_minima,
+        ):
+            return False
+        if qualidade_desejada:
+            _, vh = _dimensoes_video_local(path)
+            if vh and vh < int(qualidade_desejada * 0.75):
+                return False
+        return True
+
     candidatos = [
         _caminho_video_no_topico(
             folder_topico, page_order, lesson_name, indice, total_videos=total_videos,
@@ -259,23 +366,21 @@ def _video_ja_baixado(
         if path in vistos:
             continue
         vistos.add(path)
-        if _arquivo_pronto(path):
+        if _pronto(path):
             return True, path
 
     if total_videos == 1:
-        alvo = _prefixo_aula(page_order, lesson_name)
         for path in glob.glob(os.path.join(folder_topico, '*.mp4')):
             base = os.path.basename(path)
-            if '.part.' in base or base.endswith('.part'):
+            if not _nome_arquivo_corresponde_aula(base, page_order, lesson_name):
                 continue
-            if base.startswith(alvo):
-                if _arquivo_pronto(path):
-                    return True, path
+            if _pronto(path):
+                return True, path
         for path in glob.glob(os.path.join(legado, '*.mp4')):
             base = os.path.basename(path)
-            if '.part.' in base or base.endswith('.part'):
+            if not _nome_arquivo_corresponde_aula(base, page_order, lesson_name):
                 continue
-            if _arquivo_pronto(path):
+            if _pronto(path):
                 return True, path
 
     return False, None
@@ -285,7 +390,7 @@ def _anexo_ja_baixado(path):
     return _arquivo_pronto(path, min_bytes=1)
 
 
-def _aula_ja_completa_na_pasta(folder_topico, aula):
+def _aula_ja_completa_na_pasta(folder_topico, aula, verificar_completo=False):
     """Pula a aula inteira se vídeos, anexos e materiais da descrição já estão na pasta."""
     page_order, lesson_name = aula[0], aula[1]
     materiais = _pasta_materiais_topico(folder_topico)
@@ -302,21 +407,22 @@ def _aula_ja_completa_na_pasta(folder_topico, aula):
             pronto, _ = _video_ja_baixado(
                 folder_topico, page_order, lesson_name, indice,
                 item[0], total_videos=total,
+                verificar_completo=verificar_completo,
+                duracao_esperada=_duracao_esperada_registro_video(item),
             )
             if not pronto:
                 return False
     else:
-        alvo = _prefixo_aula(page_order, lesson_name)
         mp4_prontos = [
             p for p in glob.glob(os.path.join(folder_topico, '*.mp4'))
-            if os.path.basename(p).startswith(alvo)
-            and '.part.' not in os.path.basename(p)
-            and _arquivo_pronto(p)
+            if _nome_arquivo_corresponde_aula(os.path.basename(p), page_order, lesson_name)
+            and _video_arquivo_pronto(p, verificar_completo)
         ]
         if not mp4_prontos:
             mp4_prontos = [
                 p for p in glob.glob(os.path.join(legado, '*.mp4'))
-                if '.part.' not in os.path.basename(p) and _arquivo_pronto(p)
+                if _nome_arquivo_corresponde_aula(os.path.basename(p), page_order, lesson_name)
+                and _video_arquivo_pronto(p, verificar_completo)
             ]
         if mp4_prontos:
             tem_algo = True
@@ -476,6 +582,48 @@ def _carregar_desempenho():
             cfg['corrigir_sync_av'] = bool(CORRIGIR_SYNC_AV)
     except ImportError:
         pass
+    cfg['corrigir_fluidao'] = True
+    cfg['fluidao_crf'] = 20
+    cfg['fluidao_preset'] = 'faster'
+    cfg['fluidao_limiar'] = 0.08
+    try:
+        from config_cursos import CORRIGIR_FLUIDAO_VIDEO
+        if CORRIGIR_FLUIDAO_VIDEO is not None:
+            cfg['corrigir_fluidao'] = bool(CORRIGIR_FLUIDAO_VIDEO)
+    except ImportError:
+        pass
+    try:
+        from config_cursos import FLUIDAO_CRF
+        if FLUIDAO_CRF is not None:
+            cfg['fluidao_crf'] = max(0, min(int(FLUIDAO_CRF), 51))
+    except (ImportError, TypeError, ValueError):
+        pass
+    try:
+        from config_cursos import FLUIDAO_PRESET
+        if FLUIDAO_PRESET:
+            cfg['fluidao_preset'] = str(FLUIDAO_PRESET)
+    except ImportError:
+        pass
+    try:
+        from config_cursos import FLUIDAO_LIMIAR_IRREGULAR
+        if FLUIDAO_LIMIAR_IRREGULAR is not None:
+            cfg['fluidao_limiar'] = float(FLUIDAO_LIMIAR_IRREGULAR)
+    except (ImportError, TypeError, ValueError):
+        pass
+    cfg['verificar_video_completo'] = True
+    try:
+        from config_cursos import VERIFICAR_VIDEO_COMPLETO
+        if VERIFICAR_VIDEO_COMPLETO is not None:
+            cfg['verificar_video_completo'] = bool(VERIFICAR_VIDEO_COMPLETO)
+    except ImportError:
+        pass
+    cfg['fracao_duracao_minima'] = 0.90
+    try:
+        from config_cursos import FRACAO_DURACAO_MINIMA
+        if FRACAO_DURACAO_MINIMA is not None:
+            cfg['fracao_duracao_minima'] = min(1.0, max(0.5, float(FRACAO_DURACAO_MINIMA)))
+    except (ImportError, TypeError, ValueError):
+        pass
     return cfg
 
 
@@ -508,6 +656,32 @@ def _get_page_json(authMart, page_hash):
     return data
 
 
+def _duracao_esperada_midia(video, page):
+    for key in ('duration', 'mediaDuration'):
+        try:
+            val = video.get(key)
+            if val is not None and float(val) > 0:
+                return float(val)
+        except (TypeError, ValueError):
+            pass
+    code = video.get('mediaCode')
+    for midia in page.get('medias') or []:
+        if code and midia.get('code') == code:
+            try:
+                val = midia.get('duration')
+                if val is not None and float(val) > 0:
+                    return float(val)
+            except (TypeError, ValueError):
+                pass
+    try:
+        val = page.get('mediaDuration')
+        if val is not None and float(val) > 0:
+            return float(val)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _montar_registro_aula(item, aula_payload):
     page = item['page']
     registro = [
@@ -520,11 +694,15 @@ def _montar_registro_aula(item, aula_payload):
     ]
     try:
         for video in aula_payload['mediasSrc']:
-            registro[3]['videos'].append([
+            entrada = [
                 _nome_arquivo_seguro(video['mediaName']),
                 video['mediaCode'],
                 video['mediaSrcUrl'],
-            ])
+            ]
+            dur = _duracao_esperada_midia(video, page)
+            if dur:
+                entrada.append(dur)
+            registro[3]['videos'].append(entrada)
     except KeyError:
         pass
     try:
@@ -643,6 +821,17 @@ def _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao=None):
         text=True,
         bufsize=1,
     )
+    stderr_holder = []
+
+    def _drenar_stderr():
+        try:
+            if proc.stderr:
+                stderr_holder.append(proc.stderr.read())
+        except OSError:
+            pass
+
+    stderr_thread = threading.Thread(target=_drenar_stderr, daemon=True)
+    stderr_thread.start()
 
     tempo_atual = 0.0
     try:
@@ -665,6 +854,8 @@ def _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao=None):
                         f"  baixando {_fmt_tempo(tempo_atual)}  {_fmt_bytes(size)}    "
                     )
             elif line == 'progress=end':
+                for _resto in proc.stdout:
+                    pass
                 break
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -684,12 +875,8 @@ def _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao=None):
         print()
         raise
 
-    stderr = ''
-    try:
-        if proc.stderr:
-            stderr = proc.stderr.read()
-    except OSError:
-        pass
+    stderr_thread.join(timeout=120)
+    stderr = stderr_holder[0] if stderr_holder else ''
 
     if returncode == 0:
         size = os.path.getsize(part_path) if os.path.isfile(part_path) else 0
@@ -717,6 +904,204 @@ def _asset_height(asset):
         return int(asset.get('height') or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _headers_hls_hotmart():
+    return {
+        'User-Agent': USER_AGENT,
+        'Referer': 'https://cf-embed.play.hotmart.com/',
+        'Accept': '*/*',
+    }
+
+
+def _variante_playlist_altura(playlist):
+    res = playlist.stream_info.resolution
+    if res and len(res) == 2:
+        try:
+            return int(res[1])
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
+def _resolver_url_hls_melhor_variante(hls_url, qualidade=0):
+    """
+    Master playlists da Hotmart listam variantes do menor para o maior;
+    o ffmpeg com -map 0:v:0 costuma pegar a primeira (240p/360p).
+    Resolve até a media playlist da variante desejada.
+    """
+    headers = _headers_hls_hotmart()
+    url_atual = hls_url
+    for _ in range(10):
+        resp = requests.get(url_atual, headers=headers, timeout=45)
+        if resp.status_code != 200:
+            break
+        playlist = m3u8.loads(resp.text, uri=url_atual)
+        if not playlist.is_variant or not playlist.playlists:
+            return url_atual
+
+        candidatos = []
+        for pl in playlist.playlists:
+            h = _variante_playlist_altura(pl)
+            bw = int(pl.stream_info.bandwidth or 0)
+            candidatos.append((h, bw, pl.uri))
+
+        if not candidatos:
+            return url_atual
+
+        if qualidade:
+            dentro = [c for c in candidatos if 0 < c[0] <= qualidade]
+            if dentro:
+                candidatos = dentro
+
+        _, _, uri = max(candidatos, key=lambda c: (c[0], c[1]))
+        url_atual = urllib.parse.urljoin(url_atual, uri)
+    return url_atual
+
+
+def _dimensoes_video_local(path):
+    try:
+        r = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=width,height',
+                '-of', 'csv=p=0:s=x', path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None, None
+        parts = r.stdout.strip().split('x')
+        return int(parts[0]), int(parts[1])
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None, None
+
+
+def _parse_frame_rate(val):
+    if not val or val in ('0/0', 'N/A'):
+        return None
+    if '/' in val:
+        num, den = val.split('/', 1)
+        try:
+            den_f = float(den)
+            if den_f:
+                return round(float(num) / den_f, 3)
+        except ValueError:
+            return None
+    try:
+        return round(float(val), 3)
+    except ValueError:
+        return None
+
+
+def _fps_video_local(path):
+    try:
+        r = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=r_frame_rate,avg_frame_rate',
+                '-of', 'csv=p=0', path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0:
+            return 30.0
+        parts = (r.stdout or '').strip().split(',')
+        for raw in parts:
+            fps = _parse_frame_rate(raw.strip())
+            if fps and fps > 1:
+                return fps
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return 30.0
+
+
+def _fracao_pts_irregulares(path, amostra_seg=30):
+    """
+    Mede irregularidade de timestamps (HLS→MP4 costuma duplicar quadros).
+    Retorna fração 0..1 de intervalos anômalos na amostra inicial.
+    """
+    try:
+        r = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-read_intervals', f'0%+{int(amostra_seg)}',
+                '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time',
+                '-of', 'json', path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return 0.0
+        frames = json.loads(r.stdout).get('frames') or []
+        pts = [
+            float(fr['best_effort_timestamp_time'])
+            for fr in frames
+            if fr.get('best_effort_timestamp_time') is not None
+        ]
+        if len(pts) < 12:
+            return 0.0
+        deltas = [pts[i + 1] - pts[i] for i in range(len(pts) - 1)]
+        med = statistics.median(deltas)
+        if med <= 0:
+            return 1.0
+        irreg = sum(
+            1 for d in deltas
+            if d < 0.001 or d > med * 1.5 or d < med * 0.4
+        )
+        return irreg / len(deltas)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError):
+        return 0.0
+
+
+def _corrigir_fluidao_video(
+    path, first_folder, crf=20, preset='faster', fps=None, forcar=False,
+    limiar_irregular=0.08,
+):
+    """
+    Reamostra o vídeo em FPS constante (elimina quadros duplicados / saltos do HLS).
+    """
+    if not os.path.isfile(path):
+        return False
+    irregular = _fracao_pts_irregulares(path)
+    if not forcar and irregular < limiar_irregular:
+        return False
+
+    fps = fps or _fps_video_local(path)
+    fps_txt = f'{fps:g}'
+    tmp = path + '._fluid.tmp.mp4'
+    _limpar_parcial(tmp)
+    cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin',
+        '-i', path,
+        '-map', '0:v:0', '-map', '0:a:0?',
+        '-vf', f'fps={fps_txt}',
+        '-c:v', 'libx264', '-preset', preset, '-crf', str(crf),
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        '-y', tmp,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not _arquivo_pronto(tmp, min_bytes=1024):
+        _limpar_parcial(tmp)
+        loga(
+            first_folder, 'WARN',
+            f'Correção de fluidez não aplicada: {(proc.stderr or "")[-200:]}',
+        )
+        return False
+    os.replace(tmp, path)
+    depois = _fracao_pts_irregulares(path)
+    loga(
+        first_folder, 'INFO',
+        f'Fluidez corrigida (fps={fps_txt}, irregular {irregular:.0%}→{depois:.0%})',
+    )
+    return True
 
 
 def _escolher_asset_por_qualidade(assets, qualidade=0):
@@ -749,6 +1134,35 @@ def _ydl_format_por_qualidade(qualidade=0):
         f"bestvideo[height<={qualidade}]+bestaudio/"
         f"best[height<={qualidade}]/best"
     )
+
+
+def _normalizar_url_iframe(src):
+    src = (src or '').strip()
+    if src.startswith('//'):
+        src = 'https:' + src
+    return src
+
+
+def _link_video_externo_iframe(src, dominio):
+    """
+    Converte src de iframe (Vimeo/YouTube) em URL para youtube-dl.
+    Mantém query string do Vimeo (?h=...) necessária para vídeos privados.
+    """
+    src = _normalizar_url_iframe(src)
+    if not src:
+        return None
+    if 'player.vimeo' in src or 'vimeo.com' in src:
+        youtube_dl.utils.std_headers['Referer'] = _referer_club(dominio)
+        if 'player.vimeo' in src:
+            return src
+        vimeo_id = src.split('vimeo.com/', 1)[-1]
+        if '?' in vimeo_id:
+            vimeo_id = vimeo_id.split('?', 1)[0]
+        vimeo_id = vimeo_id.strip('/')
+        return f"https://player.vimeo.com/video/{vimeo_id}"
+    if 'youtube.com' in src or 'youtu.be' in src:
+        return src
+    return None
 
 
 def _selecionar_qualidade():
@@ -873,6 +1287,7 @@ def obter_url_hls_assinada(media_src_url, video_hash=None, qualidade=0):
     hls_url = chosen.get('url') or chosen.get('urlEncrypted')
     if not hls_url:
         raise RuntimeError("mediaAsset sem URL HLS")
+    hls_url = _resolver_url_hls_melhor_variante(hls_url, qualidade)
     return hls_url, _asset_height(chosen)
 
 
@@ -924,12 +1339,28 @@ def _remux_sincronizar_av(path, first_folder):
 def baixar_video_hotmart(
     media_src_url, video_hash, output_path, first_folder, qualidade=0,
     medir_duracao=False, mostrar_progresso=True, corrigir_sync_av=True,
+    corrigir_fluidao=True, fluidao_crf=20, fluidao_preset='faster',
+    fluidao_limiar=0.08,
+    verificar_completo=False, duracao_esperada=None, fracao_duracao_minima=0.90,
 ):
-    if _arquivo_pronto(output_path):
-        size = os.path.getsize(output_path)
-        _print_seguro(f"  [OK] Arquivo já presente ({_fmt_bytes(size)}), pulando")
-        loga(first_folder, "INFO", f"Vídeo já presente, pulado: {output_path}")
-        return
+    if _video_arquivo_pronto(
+        output_path, verificar_completo, duracao_esperada, fracao_duracao_minima,
+    ):
+        _, vh_existente = _dimensoes_video_local(output_path)
+        if qualidade and vh_existente and vh_existente < int(qualidade * 0.75):
+            _print_seguro(
+                f"  Arquivo em {vh_existente}p (preferência {qualidade}p) — baixando de novo..."
+            )
+            loga(
+                first_folder, "INFO",
+                f"Re-download por resolução baixa ({vh_existente}p): {output_path}",
+            )
+            _limpar_parcial(output_path)
+        else:
+            size = os.path.getsize(output_path)
+            _print_seguro(f"  [OK] Arquivo já presente ({_fmt_bytes(size)}), pulando")
+            loga(first_folder, "INFO", f"Vídeo já presente, pulado: {output_path}")
+            return
 
     hls_url, height = obter_url_hls_assinada(media_src_url, video_hash, qualidade=qualidade)
     preferida = f"{qualidade}p" if qualidade else "máxima"
@@ -941,55 +1372,103 @@ def baixar_video_hotmart(
 
     referer = 'https://cf-embed.play.hotmart.com/'
     headers_str = f'Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n'
-    duracao = None
-    if medir_duracao and mostrar_progresso:
+    duracao_hls = None
+    if verificar_completo or (medir_duracao and mostrar_progresso):
         with _print_lock:
             print("  Obtendo duração...", end='', flush=True)
-        duracao = _obter_duracao_media(hls_url, headers_str)
+        duracao_hls = _obter_duracao_media(hls_url, headers_str)
         with _print_lock:
-            if duracao:
-                print(f" {_fmt_tempo(duracao)}")
+            if duracao_hls:
+                print(f" {_fmt_tempo(duracao_hls)}")
             else:
                 print(" indisponível (mostrando tamanho/tempo)")
+    duracao_ref = duracao_esperada or duracao_hls
+    duracao_barra = duracao_ref if (medir_duracao and mostrar_progresso) else duracao_ref
 
-    ffmpegcmd = [
-        'ffmpeg',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-headers', headers_str,
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-        '-probesize', '32M',
-        '-analyzeduration', '32M',
-        '-fflags', '+genpts+discardcorrupt',
-        '-i', hls_url,
-        '-map', '0:v:0',
-        '-map', '0:a:0?',
-        '-c:v', 'copy',
-        '-c:a', 'copy',
-        '-bsf:a', 'aac_adtstoasc',
-        '-avoid_negative_ts', 'make_zero',
-        '-max_muxing_queue_size', '9999',
-        '-movflags', '+faststart',
-        '-y',
-        part_path,
-    ]
+    def _montar_ffmpegcmd(rw_timeout_us=None):
+        cmd = [
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-headers', headers_str,
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-probesize', '32M',
+            '-analyzeduration', '32M',
+            '-fflags', '+genpts+discardcorrupt',
+        ]
+        if rw_timeout_us:
+            cmd.extend(['-rw_timeout', str(rw_timeout_us)])
+        cmd.extend([
+            '-i', hls_url,
+            '-map', '0:v:0',
+            '-map', '0:a:0?',
+            '-c:v', 'copy',
+            '-c:a', 'copy',
+            '-bsf:a', 'aac_adtstoasc',
+            '-avoid_negative_ts', 'make_zero',
+            '-max_muxing_queue_size', '9999',
+            '-movflags', '+faststart',
+            '-y',
+            part_path,
+        ])
+        return cmd
+
     loga(first_folder, "INFO", "Iniciando o FFMPEG (URL assinada)")
-    try:
-        if mostrar_progresso:
-            returncode, stderr = _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao)
-        else:
-            returncode, stderr = _rodar_ffmpeg_simples(ffmpegcmd)
-    except KeyboardInterrupt:
-        loga(first_folder, "WARN", "Download interrompido pelo usuário (ffmpeg)")
-        raise
-    if returncode != 0:
-        _limpar_parcial(output_path)
-        detalhe = (stderr or '').strip().splitlines()[-1:]
-        detalhe = detalhe[0] if detalhe else f"código {returncode}"
-        raise RuntimeError(f"ffmpeg falhou: {detalhe}")
-    if corrigir_sync_av:
+    returncode = 1
+    stderr = ''
+    for tentativa in range(2):
+        usar_barra = mostrar_progresso and tentativa == 0
+        ffmpegcmd = _montar_ffmpegcmd(
+            rw_timeout_us=60_000_000 if tentativa else None,
+        )
+        try:
+            if usar_barra:
+                returncode, stderr = _rodar_ffmpeg_com_progresso(
+                    ffmpegcmd, part_path, duracao_barra,
+                )
+            else:
+                returncode, stderr = _rodar_ffmpeg_simples(ffmpegcmd)
+        except KeyboardInterrupt:
+            loga(first_folder, "WARN", "Download interrompido pelo usuário (ffmpeg)")
+            raise
+        if returncode != 0:
+            _limpar_parcial(output_path)
+            detalhe = (stderr or '').strip().splitlines()[-1:]
+            detalhe = detalhe[0] if detalhe else f"código {returncode}"
+            raise RuntimeError(f"ffmpeg falhou: {detalhe}")
+        if verificar_completo and duracao_ref and duracao_ref >= 60:
+            local = _duracao_mp4_local(part_path)
+            if not _duracao_local_suficiente(
+                part_path, duracao_ref, fracao_duracao_minima,
+            ):
+                msg = (
+                    f"Vídeo incompleto ({_fmt_tempo(local or 0)} de "
+                    f"{_fmt_tempo(duracao_ref)} esperados)"
+                )
+                if tentativa == 0:
+                    loga(first_folder, "WARN", f"{msg} — nova tentativa de download")
+                    _print_seguro(f"  {msg}; tentando de novo...")
+                    _limpar_parcial(part_path)
+                    continue
+                _limpar_parcial(output_path)
+                raise RuntimeError(f"{msg}. Rode o script de novo com token válido.")
+        break
+
+    fluido_aplicado = False
+    if corrigir_fluidao:
+        irregular = _fracao_pts_irregulares(part_path)
+        if irregular >= fluidao_limiar:
+            _print_seguro(
+                f'  Suavizando movimento (timestamps HLS ~{irregular:.0%} irregulares)...',
+            )
+            fluido_aplicado = _corrigir_fluidao_video(
+                part_path, first_folder,
+                crf=fluidao_crf, preset=fluidao_preset,
+                limiar_irregular=fluidao_limiar, forcar=True,
+            )
+    if corrigir_sync_av and not fluido_aplicado:
         _print_seguro('  Ajustando sincronia áudio/vídeo...')
         _remux_sincronizar_av(part_path, first_folder)
     try:
@@ -998,6 +1477,17 @@ def baixar_video_hotmart(
         _limpar_parcial(output_path)
         raise
     size = os.path.getsize(output_path)
+    vw, vh = _dimensoes_video_local(output_path)
+    if vw and vh:
+        _print_seguro(f"  Resolução real: {vw}x{vh}")
+        loga(first_folder, "INFO", f"Resolução do arquivo: {vw}x{vh}")
+        if qualidade and vh < int(qualidade * 0.75):
+            msg = (
+                f"Arquivo em {vh}p, abaixo da preferência {qualidade}p "
+                "(fonte pode não ter HD ou variante indisponível)."
+            )
+            _print_seguro(f"  Aviso: {msg}")
+            loga(first_folder, "WARN", msg)
     _print_seguro(f"  Concluído: {output_path} ({_fmt_bytes(size)})")
     loga(first_folder, "INFO", f"FFMPEG concluído, aula baixada ({size} bytes).")
 
@@ -1973,7 +2463,19 @@ def listacursos(authMart, params):
         'medir_duracao': desempenho['medir_duracao'],
         'mostrar_progresso': not paralelo,
         'corrigir_sync_av': desempenho['corrigir_sync_av'],
+        'corrigir_fluidao': desempenho['corrigir_fluidao'],
+        'fluidao_crf': desempenho['fluidao_crf'],
+        'fluidao_preset': desempenho['fluidao_preset'],
+        'fluidao_limiar': desempenho['fluidao_limiar'],
+        'verificar_completo': desempenho['verificar_video_completo'],
+        'fracao_duracao_minima': desempenho['fracao_duracao_minima'],
     }
+    if desempenho['verificar_video_completo']:
+        pct = int(desempenho['fracao_duracao_minima'] * 100)
+        print(
+            'Verificação de vídeo: ffprobe + duração da aula — completos serão pulados; '
+            f'incompletos (<{pct}% do tempo no site) serão baixados de novo.\n'
+        )
 
     stats_lock = threading.Lock()
 
@@ -2011,7 +2513,9 @@ def listacursos(authMart, params):
                     'aulas_indices': sorted(aulas_selecionadas),
                     'videos_por_aula': _serializar_videos_por_aula(videos_por_aula),
                 })
-                if not so_videos and _aula_ja_completa_na_pasta(folder_path, aula):
+                if not so_videos and _aula_ja_completa_na_pasta(
+                    folder_path, aula, desempenho['verificar_video_completo'],
+                ):
                     n_v = len(aula[3]['videos']) or 0
                     if n_v:
                         videos_pulados += n_v
@@ -2061,45 +2565,24 @@ def listacursos(authMart, params):
                         for x, i in enumerate(viframe, start=1):
                             if not _video_incluido_no_escopo(aula_idx, x, videos_por_aula):
                                 continue
-                            if 'player.vimeo' in i.get("src"):
-                                youtube_dl.utils.std_headers['Referer'] = _referer_club(dominio)
-
-                                loga(first_folder, "INFO", f"Vídeo encontrado! {i.get('src')}")
-
-                                if '?' in i.get("src"):
-                                    linkV = i.get("src").split('?')[0]
-                                else:
-                                    linkV = i.get("src")
-                                if linkV[-1] == "/":
-                                    linkV = linkV.split("/")[-1]
-
-                            elif 'vimeo.com' in i.get("src"):
-                                youtube_dl.utils.std_headers['Referer'] = _referer_club(dominio)
-
-                                loga(first_folder, "INFO", f"Vídeo encontrado! {i.get('src')}")
-
-                                vimeoID = i.get("src").split('vimeo.com/')[1]
-                                if "?" in vimeoID:
-                                    vimeoID = vimeoID.split("?")[0]
-                                linkV = "https://player.vimeo.com/video/" + vimeoID
-
-                            elif "wistia.com" in i.get("src"):
-
-                                loga(first_folder, "ERROR", f"WISTIA! Vídeo encontrado! {i.get('src')}")
-
-                                # Método de download caiu, era pelo bin :( Ajuda noix Telegram: @katomaro
-                                pass
-
-                            elif "youtube.com" in i.get("src") or "youtu.be" in i.get("src"):
-
-                                loga(first_folder, "INFO", f"Vídeo encontrado! {i.get('src')}")
-
-                                linkV = i.get("src")
+                            src_iframe = i.get("src") or ""
+                            if "wistia.com" in src_iframe:
+                                loga(
+                                    first_folder, "ERROR",
+                                    f"WISTIA! Vídeo encontrado! {src_iframe}",
+                                )
+                                continue
+                            linkV = _link_video_externo_iframe(src_iframe, dominio)
+                            if not linkV:
+                                continue
+                            loga(first_folder, "INFO", f"Vídeo encontrado! {linkV}")
                             destino_video = _caminho_video_no_topico(
                                 folder_path, page_order, lesson_name, x, total_videos=1,
                             )
                             pronto, existente = _video_ja_baixado(
                                 folder_path, page_order, lesson_name, x, total_videos=1,
+                                verificar_completo=desempenho['verificar_video_completo'],
+                                qualidade_desejada=qualidade_video,
                             )
                             if pronto:
                                 print(f"  [OK] Aula já presente ({existente}), pulando")
@@ -2114,11 +2597,20 @@ def listacursos(authMart, params):
                                     'continuedl': True,
                                     'nooverwrites': False,
                                 }
-                                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                                    ydl.download([linkV])
-                                    loga(first_folder, "INFO", f"Vídeo externo baixado com sucesso.")
+                                try:
+                                    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                                        ydl.download([linkV])
+                                    loga(first_folder, "INFO", "Vídeo externo baixado com sucesso.")
+                                except Exception as ext_err:
+                                    _limpar_parcial(destino_video)
+                                    print(f"  Falha no vídeo externo: {ext_err}")
+                                    loga(first_folder, "ERROR", f"Vídeo externo: {ext_err}")
+                                    continue
                                 if _arquivo_pronto(destino_video):
                                     videos_baixados += 1
+                                    vw, vh = _dimensoes_video_local(destino_video)
+                                    if vw and vh:
+                                        _print_seguro(f"  Resolução real: {vw}x{vh}")
                                 else:
                                     _limpar_parcial(destino_video)
                                     print("  Vídeo externo incompleto — será tentado de novo na próxima execução")
@@ -2126,12 +2618,11 @@ def listacursos(authMart, params):
 
                     except KeyboardInterrupt:
                         raise
-                    except:
-
-                        loga(first_folder, "WARN",
-                             "Plataforma não retornou vídeos, verificar se é postagem (aula textual)")
-
-                        pass
+                    except Exception as ext_page_err:
+                        loga(
+                            first_folder, "WARN",
+                            f"Erro ao processar vídeos externos da aula: {ext_page_err}",
+                        )
 
                 else:  # 0 nome, 1 id, 2 link
                     total_vids = len(aula[3]['videos'])
@@ -2141,15 +2632,38 @@ def listacursos(authMart, params):
                         destino_video = _caminho_video_no_topico(
                             folder_path, page_order, lesson_name, x, total_videos=total_vids,
                         )
+                        duracao_esp = _duracao_esperada_registro_video(i)
                         pronto, existente = _video_ja_baixado(
                             folder_path, page_order, lesson_name, x, i[0],
                             total_videos=total_vids,
+                            verificar_completo=desempenho['verificar_video_completo'],
+                            duracao_esperada=duracao_esp,
+                            fracao_duracao_minima=desempenho['fracao_duracao_minima'],
+                            qualidade_desejada=qualidade_video,
                         )
                         if pronto:
                             print(f"  [OK] Vídeo {x}/{total_vids} já presente ({existente}), pulando")
                             loga(first_folder, "INFO", f"Vídeo já presente: {existente}")
                             videos_pulados += 1
                         else:
+                            if existente is None and duracao_esp:
+                                curto = None
+                                for path in glob.glob(os.path.join(folder_path, '*.mp4')):
+                                    if _nome_arquivo_corresponde_aula(
+                                        os.path.basename(path), page_order, lesson_name,
+                                    ):
+                                        curto = path
+                                        break
+                                if curto and os.path.isfile(curto):
+                                    loc = _duracao_mp4_local(curto)
+                                    print(
+                                        f"  Vídeo incompleto ({_fmt_tempo(loc or 0)} / "
+                                        f"{_fmt_tempo(duracao_esp)}): {curto}"
+                                    )
+                                    loga(
+                                        first_folder, "WARN",
+                                        f"Vídeo incompleto, re-download: {curto}",
+                                    )
                             _limpar_parcial(destino_video)
                             print(f"  Baixando vídeo {x}/{total_vids}: {destino_video}")
                             loga(first_folder, "INFO", f"Tentando baixar a aula {str(x)} ({lesson_name})")
@@ -2157,11 +2671,13 @@ def listacursos(authMart, params):
                                 if paralelo:
                                     def _job(
                                         url=i[2], vhash=i[1], dest=destino_video,
+                                        dur=duracao_esp,
                                     ):
                                         nonlocal videos_baixados
                                         baixar_video_hotmart(
                                             url, vhash, dest, first_folder,
                                             qualidade=qualidade_video,
+                                            duracao_esperada=dur,
                                             **opts_video,
                                         )
                                         with stats_lock:
@@ -2171,6 +2687,7 @@ def listacursos(authMart, params):
                                     baixar_video_hotmart(
                                         i[2], i[1], destino_video, first_folder,
                                         qualidade=qualidade_video,
+                                        duracao_esperada=duracao_esp,
                                         **opts_video,
                                     )
                                     videos_baixados += 1
