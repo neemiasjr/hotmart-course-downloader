@@ -469,6 +469,13 @@ def _carregar_desempenho():
             cfg['api_paralelo'] = max(1, min(int(API_PARALELO), 16))
     except (TypeError, ValueError):
         pass
+    cfg['corrigir_sync_av'] = True
+    try:
+        from config_cursos import CORRIGIR_SYNC_AV
+        if CORRIGIR_SYNC_AV is not None:
+            cfg['corrigir_sync_av'] = bool(CORRIGIR_SYNC_AV)
+    except ImportError:
+        pass
     return cfg
 
 
@@ -869,9 +876,54 @@ def obter_url_hls_assinada(media_src_url, video_hash=None, qualidade=0):
     return hls_url, _asset_height(chosen)
 
 
+def _video_tem_audio(path):
+    try:
+        r = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return r.returncode == 0 and 'audio' in (r.stdout or '').lower()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _remux_sincronizar_av(path, first_folder):
+    """
+    HLS da Hotmart com -c copy costuma gerar áudio adiantado (PTS desalinhado).
+    Remux: vídeo copy + áudio AAC com aresample async.
+    """
+    if not _video_tem_audio(path):
+        return
+    tmp = path + '._sync.tmp.mp4'
+    _limpar_parcial(tmp)
+    cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin',
+        '-i', path,
+        '-map', '0:v:0', '-map', '0:a:0?',
+        '-c:v', 'copy',
+        '-c:a', 'aac', '-b:a', '192k',
+        '-af', 'aresample=async=1:first_pts=0',
+        '-avoid_negative_ts', 'make_zero',
+        '-movflags', '+faststart',
+        '-y', tmp,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not _arquivo_pronto(tmp, min_bytes=1024):
+        _limpar_parcial(tmp)
+        loga(first_folder, 'WARN', f'Remux A/V não aplicado: {(proc.stderr or "")[-200:]}')
+        return
+    os.replace(tmp, path)
+    loga(first_folder, 'INFO', 'Remux A/V aplicado (sync áudio/vídeo)')
+
+
 def baixar_video_hotmart(
     media_src_url, video_hash, output_path, first_folder, qualidade=0,
-    medir_duracao=False, mostrar_progresso=True,
+    medir_duracao=False, mostrar_progresso=True, corrigir_sync_av=True,
 ):
     if _arquivo_pronto(output_path):
         size = os.path.getsize(output_path)
@@ -908,9 +960,18 @@ def baixar_video_hotmart(
         '-reconnect', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
+        '-probesize', '32M',
+        '-analyzeduration', '32M',
+        '-fflags', '+genpts+discardcorrupt',
         '-i', hls_url,
-        '-c', 'copy',
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-c:v', 'copy',
+        '-c:a', 'copy',
         '-bsf:a', 'aac_adtstoasc',
+        '-avoid_negative_ts', 'make_zero',
+        '-max_muxing_queue_size', '9999',
+        '-movflags', '+faststart',
         '-y',
         part_path,
     ]
@@ -928,6 +989,9 @@ def baixar_video_hotmart(
         detalhe = (stderr or '').strip().splitlines()[-1:]
         detalhe = detalhe[0] if detalhe else f"código {returncode}"
         raise RuntimeError(f"ffmpeg falhou: {detalhe}")
+    if corrigir_sync_av:
+        _print_seguro('  Ajustando sincronia áudio/vídeo...')
+        _remux_sincronizar_av(part_path, first_folder)
     try:
         _finalizar_download(part_path, output_path)
     except Exception:
@@ -1908,6 +1972,7 @@ def listacursos(authMart, params):
     opts_video = {
         'medir_duracao': desempenho['medir_duracao'],
         'mostrar_progresso': not paralelo,
+        'corrigir_sync_av': desempenho['corrigir_sync_av'],
     }
 
     stats_lock = threading.Lock()
