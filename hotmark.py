@@ -1492,10 +1492,10 @@ def baixar_video_hotmart(
     loga(first_folder, "INFO", f"FFMPEG concluído, aula baixada ({size} bytes).")
 
 
-def _parse_selecao_numeros(raw, max_n):
+def _parse_selecao_numeros(raw, max_n, fallback_todos=True):
     """
     Interpreta seleção numérica: Enter/0/todos = todos; 2; 1,3; 2-4.
-    Retorna set de índices 1..max_n ou None se max_n==0.
+    Retorna set de índices 1..max_n ou set() se max_n==0.
     """
     if max_n <= 0:
         return set()
@@ -1508,7 +1508,7 @@ def _parse_selecao_numeros(raw, max_n):
     for parte in raw.replace(' ', '').split(','):
         if not parte:
             continue
-        if '-' in parte and ':v' not in parte:
+        if '-' in parte and ':' not in parte:
             a, b = parte.split('-', 1)
             try:
                 inicio, fim = int(a), int(b)
@@ -1528,9 +1528,92 @@ def _parse_selecao_numeros(raw, max_n):
                 escolhidos.add(n)
 
     if not escolhidos:
-        print("Nenhuma opção válida. Usando todos.")
-        return set(range(1, max_n + 1))
+        if fallback_todos:
+            print("Nenhuma opção válida. Usando todos.")
+            return set(range(1, max_n + 1))
+        return set()
     return escolhidos
+
+
+def _parse_selecao_topicos(raw, max_n):
+    """
+    Tópicos (módulos): 5 | 1,3 | 2-4 | 5:2 (só a 2ª aula do tópico 5) | 5:2,4 | 5:2-4
+    Retorna (set índices de tópico 1..max_n, dict tópico -> set índices de aula no tópico).
+    Chaves em aulas_por_topico só existem quando o usuário restringiu aulas daquele tópico.
+    """
+    if max_n <= 0:
+        return set(), {}
+
+    raw = (raw or '').strip().lower()
+    if not raw or raw in ('0', 'all', 'todos', '*'):
+        return set(range(1, max_n + 1)), {}
+
+    topicos = set()
+    aulas_por_topico = {}
+
+    for parte in raw.replace(' ', '').split(','):
+        if not parte:
+            continue
+        match = re.match(r'^(\d+)(?::([\d,\-*]+))?$', parte)
+        if not match:
+            print(f"Ignorando trecho inválido: {parte}")
+            continue
+        t_idx = int(match.group(1))
+        if not (1 <= t_idx <= max_n):
+            print(f"Ignorando tópico fora da lista: {t_idx}")
+            continue
+        topicos.add(t_idx)
+        sufixo = match.group(2)
+        if sufixo is None:
+            continue
+        aulas = _parse_selecao_numeros(sufixo, 9999, fallback_todos=False)
+        if not aulas:
+            print(f"Ignorando aulas inválidas em {parte}")
+            continue
+        aulas_por_topico[t_idx] = aulas
+
+    if not topicos:
+        print("Nenhum tópico válido. Usando todos.")
+        return set(range(1, max_n + 1)), {}
+    return topicos, aulas_por_topico
+
+
+def _mapa_ordem_topicos(modulos):
+    """moduleOrder -> índice 1-based na lista de módulos do curso."""
+    ordenados = _modulos_ordenados(modulos)
+    return {m.get('moduleOrder'): i + 1 for i, m in enumerate(ordenados)}
+
+
+def _resolver_indice_aula_no_plano(n, plano):
+    """
+    Converte número digitado pelo usuário em idx do plano (1ª coluna da lista).
+    Aceita idx direto, posição da aula no tópico ou pageOrder quando for único no plano.
+    """
+    if not plano:
+        return None
+    if any(p['idx'] == n for p in plano):
+        return n
+    por_pos = [p['idx'] for p in plano if p.get('lesson_in_topic_idx') == n]
+    if len(por_pos) == 1:
+        return por_pos[0]
+    por_page = [p['idx'] for p in plano if p.get('page_order') == n]
+    if len(por_page) == 1:
+        return por_page[0]
+    return None
+
+
+def _filtrar_plano_por_aulas_no_topico(plano, aulas_por_topico):
+    if not aulas_por_topico:
+        return plano
+    out = []
+    for item in plano:
+        t = item.get('topic_display_idx')
+        restr = aulas_por_topico.get(t)
+        if restr is None:
+            out.append(item)
+        elif item.get('lesson_in_topic_idx') in restr:
+            out.append(item)
+    return out
 
 
 def _modulos_ordenados(modulos):
@@ -1540,8 +1623,9 @@ def _modulos_ordenados(modulos):
 def _selecionar_modulos(modulos, raw=None):
     """
     Mostra a lista de módulos e deixa o usuário escolher quais baixar.
-    Aceita: 0/all/enter=todos | 2 | 1,3,5 | 2-4
-    raw: seleção pré-definida (ex.: config_cursos.TOPICOS_INDICES como string "5")
+    Aceita: 0/all/enter=todos | 2 | 1,3,5 | 2-4 | 5:2 (só a 2ª aula do tópico 5)
+    raw: seleção pré-definida (ex.: config_cursos.TOPICOS_INDICES como string "5" ou "5:2")
+    Retorna (lista de módulos, dict opcional tópico -> aulas dentro do tópico).
     """
     ordenados = _modulos_ordenados(modulos)
     print(f"\n=== Módulos / tópicos ({len(ordenados)}) ===")
@@ -1554,28 +1638,37 @@ def _selecionar_modulos(modulos, raw=None):
         raw = input(
             "\nQuais tópicos deseja baixar?\n"
             "  0 ou Enter = todos | ex: 2 | 1,3,5 | 2-4\n"
+            "  Só algumas aulas de um tópico: 5:2 | 5:2,4 | 5:2-4\n"
             "> "
         )
 
-    escolhidos = _parse_selecao_numeros(raw, len(ordenados))
-    if len(escolhidos) == len(ordenados):
+    escolhidos, aulas_por_topico = _parse_selecao_topicos(raw, len(ordenados))
+    if len(escolhidos) == len(ordenados) and not aulas_por_topico:
         print(f"Baixando todos os {len(ordenados)} tópico(s).")
-        return ordenados
+        return ordenados, {}
 
     filtrados = [m for i, m in enumerate(ordenados, start=1) if i in escolhidos]
     print("Tópicos selecionados:")
     for m in filtrados:
         print(f" - {_nome_arquivo_seguro(m.get('name', ''))}")
-    return filtrados
+    if aulas_por_topico:
+        for t in sorted(aulas_por_topico):
+            nums = ','.join(str(x) for x in sorted(aulas_por_topico[t]))
+            print(f"   Tópico {t}: somente aula(s) {nums} (ordem dentro do tópico)")
+    return filtrados, aulas_por_topico
 
 
-def _plano_aulas(modulos_escolhidos):
+def _plano_aulas(modulos_escolhidos, todos_modulos=None):
     """Lista plana de aulas (1..N) nos tópicos escolhidos."""
+    if todos_modulos is None:
+        todos_modulos = modulos_escolhidos
+    ordem_topico = _mapa_ordem_topicos(todos_modulos)
     plano = []
     idx = 0
     for modulo in _modulos_ordenados(modulos_escolhidos):
         pages = sorted(modulo.get('pages') or [], key=lambda p: p.get('pageOrder', 0))
-        for page in pages:
+        topic_display_idx = ordem_topico.get(modulo.get('moduleOrder'))
+        for lesson_in_topic_idx, page in enumerate(pages, start=1):
             idx += 1
             plano.append({
                 'idx': idx,
@@ -1586,6 +1679,8 @@ def _plano_aulas(modulos_escolhidos):
                 'page_order': page.get('pageOrder'),
                 'page_name': _nome_arquivo_seguro(page.get('name', '')),
                 'hash': page.get('hash'),
+                'topic_display_idx': topic_display_idx,
+                'lesson_in_topic_idx': lesson_in_topic_idx,
             })
     return plano
 
@@ -1598,7 +1693,7 @@ def _parse_videos_de_texto(texto):
     return _parse_selecao_numeros(texto, 9999)
 
 
-def _parse_escopo_aulas(raw, num_aulas):
+def _parse_escopo_aulas(raw, num_aulas, plano=None):
     """
     Interpreta seleção de aulas/vídeos.
     Retorna (set índices de aula, dict aula_idx -> set vídeos ou None=todos).
@@ -1614,28 +1709,54 @@ def _parse_escopo_aulas(raw, num_aulas):
     for parte in raw.replace(' ', '').split(','):
         if not parte:
             continue
-        match = re.match(r'^(\d+)(?::v([\d,\-*]*))?$', parte)
+        match_topico = re.match(r'^(\d+):(\d+)$', parte)
+        if match_topico and plano:
+            t_idx = int(match_topico.group(1))
+            l_idx = int(match_topico.group(2))
+            hits = [
+                p['idx'] for p in plano
+                if p.get('topic_display_idx') == t_idx
+                and p.get('lesson_in_topic_idx') == l_idx
+            ]
+            if hits:
+                aulas.update(hits)
+                continue
+        match = re.match(r'^(\d+)(?::v?([\d,\-*]*))?$', parte)
         if not match:
             print(f"Ignorando trecho inválido: {parte}")
             continue
-        a_idx = int(match.group(1))
-        if not (1 <= a_idx <= num_aulas):
-            print(f"Ignorando aula fora da lista: {a_idx}")
-            continue
-        aulas.add(a_idx)
+        a_num = int(match.group(1))
         sufixo = match.group(2)
         if sufixo is None:
+            a_idx = _resolver_indice_aula_no_plano(a_num, plano) if plano else None
+            if a_idx is None and 1 <= a_num <= num_aulas:
+                a_idx = a_num
+            if a_idx is None:
+                print(f"Ignorando aula fora da lista: {a_num}")
+                continue
+            aulas.add(a_idx)
             continue
         if sufixo == '':
+            a_idx = _resolver_indice_aula_no_plano(a_num, plano) if plano else a_num
+            if a_idx is None or not (1 <= a_idx <= num_aulas):
+                print(f"Ignorando aula fora da lista: {a_num}")
+                continue
+            aulas.add(a_idx)
             videos_por_aula[a_idx] = _PENDENTE_ESCOLHA_VIDEO
         else:
+            a_idx = _resolver_indice_aula_no_plano(a_num, plano) if plano else None
+            if a_idx is None and 1 <= a_num <= num_aulas:
+                a_idx = a_num
+            if a_idx is None:
+                print(f"Ignorando aula fora da lista: {a_num}")
+                continue
+            aulas.add(a_idx)
             vids = _parse_videos_de_texto(sufixo)
             if vids:
                 videos_por_aula[a_idx] = vids
 
     if not aulas:
-        print("Nenhuma aula válida. Usando todas.")
-        return set(range(1, num_aulas + 1)), {}
+        return set(), {}
 
     return aulas, videos_por_aula
 
@@ -1690,7 +1811,7 @@ def _escopo_aulas_de_config(plano):
     n = len(plano)
     if AULAS_INDICES is not None:
         raw = _indices_config_para_raw(AULAS_INDICES, 'AULAS_INDICES')
-        aulas, videos = _parse_escopo_aulas(raw, n)
+        aulas, videos = _parse_escopo_aulas(raw, n, plano)
     else:
         aulas = set(range(1, n + 1))
         videos = {}
@@ -1705,7 +1826,7 @@ def _escopo_aulas_de_config(plano):
                 else:
                     videos[a_idx] = {int(val)}
         else:
-            extra_aulas, extra_v = _parse_escopo_aulas(str(AULA_VIDEO), n)
+            extra_aulas, extra_v = _parse_escopo_aulas(str(AULA_VIDEO), n, plano)
             if AULAS_INDICES is None:
                 aulas = extra_aulas
             else:
@@ -1718,33 +1839,57 @@ def _escopo_aulas_de_config(plano):
     return aulas, videos
 
 
-def _selecionar_escopo_aulas(plano, authMart, raw=None):
+def _selecionar_escopo_aulas(plano, authMart, raw=None, aulas_ja_filtradas=False):
     """
     Escolhe quais aulas (e opcionalmente vídeos) baixar.
-    Ex.: 3 | 1,5 | 5:v2 (só vídeo 2 da aula 5) | 5:v (lista vídeos)
+    Ex.: 3 | 1,5 | 5:v2 (só vídeo 2 da aula 5) | 5:v (lista vídeos) | 5:2 (tópico 5, 2ª aula)
     """
     if not plano:
         return set(), {}
 
-    cfg = None if raw is not None else _escopo_aulas_de_config(plano)
-    if cfg is not None:
-        aulas, videos_por_aula = cfg
+    if aulas_ja_filtradas:
+        aulas = {p['idx'] for p in plano}
+        videos_por_aula = {}
+        print(f"\nUsando {len(aulas)} aula(s) já filtradas na seleção de tópicos.")
     else:
-        print(f"\n=== Aulas nos tópicos selecionados ({len(plano)}) ===")
-        for item in plano:
-            print(
-                f"{item['idx']}. [{item['module_name']}] "
-                f"{item['page_order']}. {item['page_name']}"
-            )
-        if raw is None:
-            raw = input(
+        cfg = None if raw is not None else _escopo_aulas_de_config(plano)
+        if cfg is not None:
+            aulas, videos_por_aula = cfg
+            if not aulas:
+                print("AVISO: AULAS_INDICES / AULA_VIDEO no config não selecionou nenhuma aula.")
+        else:
+            print(f"\n=== Aulas nos tópicos selecionados ({len(plano)}) ===")
+            for item in plano:
+                print(
+                    f"{item['idx']}. [{item['module_name']}] "
+                    f"({item['lesson_in_topic_idx']}) {item['page_order']}. {item['page_name']}"
+                )
+            aulas = set()
+            videos_por_aula = {}
+            prompt_aulas = (
                 "\nQuais aulas baixar?\n"
                 "  Enter ou 0 = todas\n"
-                "  ex: 3 | 1,5,10 | 2-4\n"
-                "  Um vídeo só: 5:v2 (aula 5, vídeo 2) | 5:v (escolher na lista)\n"
+                "  ex: 3 | 1,5,10 | 2-4 | 9,10 (nº no tópico, se único)\n"
+                "  Tópico:aula: 5:2 | Um vídeo: 5:v2 ou 5:2 (se não existir 5:2 como tópico)\n"
                 "> "
             )
-        aulas, videos_por_aula = _parse_escopo_aulas(raw, len(plano))
+            while not aulas:
+                if raw is None:
+                    raw = input(prompt_aulas)
+                r = (raw or '').strip().lower()
+                if r in ('0', 'all', 'todos', '*', ''):
+                    aulas = set(range(1, len(plano) + 1))
+                    videos_por_aula = {}
+                    break
+                aulas, videos_por_aula = _parse_escopo_aulas(raw, len(plano), plano)
+                if aulas:
+                    break
+                print(
+                    "Nenhuma aula válida. Use o número à esquerda (ex.: 3), "
+                    "número da aula no tópico se for único (ex.: 9,10), "
+                    "tópico:aula (5:2) ou vídeo (5:v2)."
+                )
+                raw = None
 
     if any(v is _PENDENTE_ESCOLHA_VIDEO for v in videos_por_aula.values()):
         videos_por_aula = _resolver_videos_pendentes(videos_por_aula, plano, authMart)
@@ -2149,17 +2294,29 @@ def autenticacao(**kwargs):
         session, params = _sessao_com_token(token)
         # Tokens do Club (client b432cdd3-...) são rejeitados pelo check_token antigo.
         # Valida direto na API do Club, que é o que o download usa.
-        subdomain = None
+        subdominios = []
         try:
             from config_cursos import CURSOS_SUBDOMINIOS
-            if CURSOS_SUBDOMINIOS:
-                subdomain = CURSOS_SUBDOMINIOS[0].strip()
+            subdominios = [
+                s.strip() for s in (CURSOS_SUBDOMINIOS or []) if s and str(s).strip()
+            ]
         except Exception:
             pass
-        if not subdomain:
-            subdomain = 'tecladistapop'
-        product_id = _product_id_por_subdominio(subdomain)
-        ok, status, detalhe = _validar_token_club(session, subdomain, product_id)
+        if not subdominios:
+            print(
+                "Configure CURSOS_SUBDOMINIOS em config_cursos.py "
+                "para validar o Bearer token."
+            )
+            loga(".", "ERROR", "CURSOS_SUBDOMINIOS vazio — não foi possível validar token")
+            exit(13)
+        ok = False
+        status = 0
+        detalhe = ''
+        for subdomain in subdominios:
+            product_id = _product_id_por_subdominio(subdomain)
+            ok, status, detalhe = _validar_token_club(session, subdomain, product_id)
+            if ok:
+                break
         if not ok:
             print(
                 "Token inválido, incompleto ou expirado.\n"
@@ -2361,15 +2518,17 @@ def listacursos(authMart, params):
         raw_retoma = input("Continuar de onde parou? [S/n]\n> ").strip().lower()
         retomar = raw_retoma in ('', 's', 'sim', 'y', 'yes')
 
+    aulas_por_topico = {}
+    todos_modulos = curso.get('modules') or []
     if retomar:
         qualidade_video = int(progresso.get('qualidade') or 0)
         orders = set(progresso.get('module_orders') or [])
-        todos = sorted(curso.get('modules') or [], key=lambda m: m.get('moduleOrder', 0))
+        todos = sorted(todos_modulos, key=lambda m: m.get('moduleOrder', 0))
         modulos_escolhidos = [m for m in todos if m.get('moduleOrder') in orders]
         if not modulos_escolhidos:
             print("Progresso inválido (tópicos não encontrados). Seleção manual.")
             qualidade_video = _selecionar_qualidade()
-            modulos_escolhidos = _selecionar_modulos(curso.get('modules') or [])
+            modulos_escolhidos, aulas_por_topico = _selecionar_modulos(todos_modulos)
             retomar = False
         else:
             qlabel = f"{qualidade_video}p" if qualidade_video else "qualidade máxima"
@@ -2377,16 +2536,21 @@ def listacursos(authMart, params):
             loga(first_folder, "INFO", f"Retomando download (qualidade={qualidade_video})")
     else:
         qualidade_video = _selecionar_qualidade()
-        modulos_escolhidos = _selecionar_modulos(
-            curso.get('modules') or [],
+        modulos_escolhidos, aulas_por_topico = _selecionar_modulos(
+            todos_modulos,
             raw=_topicos_raw_de_config(),
         )
 
-    plano = _plano_aulas(modulos_escolhidos)
+    plano = _plano_aulas(modulos_escolhidos, todos_modulos=todos_modulos)
+    plano_restrito_topico = bool(aulas_por_topico)
+    if aulas_por_topico:
+        plano = _filtrar_plano_por_aulas_no_topico(plano, aulas_por_topico)
     if retomar:
         aulas_selecionadas, videos_por_aula = _escopo_de_progresso(progresso, plano, authMart)
     else:
-        aulas_selecionadas, videos_por_aula = _selecionar_escopo_aulas(plano, authMart)
+        aulas_selecionadas, videos_por_aula = _selecionar_escopo_aulas(
+            plano, authMart, aulas_ja_filtradas=plano_restrito_topico,
+        )
     plano_filtrado = [p for p in plano if p['idx'] in aulas_selecionadas]
     hash_para_idx = {p['hash']: p['idx'] for p in plano_filtrado}
 

@@ -24,8 +24,9 @@ CURSOS_PRODUCT_IDS = {
 QUALIDADE_VIDEO = None
 
 # Escopo opcional (None = perguntar ao rodar o script)
-# Tópicos: números da lista "Módulos / tópicos" (ex.: 5 ou [1, 2] ou "1-2" — com ASPAS!)
+# Tópicos: 5 | [1, 2] | "1-2" | "5:2" (só a 2ª aula do tópico 5) | "5:2-4"
 TOPICOS_INDICES = None
+# Aulas (após tópicos): 3 | [2, 5] | "9,10" | "5:2" (tópico:aula) | "5:v2" (só vídeo 2)
 AULAS_INDICES = None
 AULA_VIDEO = None
 
