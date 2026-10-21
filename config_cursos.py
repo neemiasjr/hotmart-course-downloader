@@ -19,6 +19,12 @@ CURSOS_PRODUCT_IDS = {
     # "seu-subdominio": "123456",
 }
 
+# Opcional: nome da pasta do curso (por subdomínio ou product ID).
+# Por padrão o nome vem da API de compras da Hotmart (o mesmo exibido no site).
+CURSOS_NOMES = {
+    # "seu-subdominio": "Cozinhar é bom demais!",
+}
+
 # Qualidade máxima dos vídeos (altura em pixels).
 # Exemplos: 360, 480, 720, 1080 | 0 = máxima disponível | None = perguntar ao rodar
 QUALIDADE_VIDEO = None

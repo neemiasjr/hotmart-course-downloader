@@ -254,12 +254,15 @@ def _video_arquivo_pronto(
 
 def _nome_arquivo_corresponde_aula(basename, page_order, lesson_name):
     """Reconhece vídeo na raiz do módulo (layout achatado ou renomeado)."""
-    base = basename.lower()
+    base = unicodedata.normalize('NFC', basename).lower()
     if '.part.' in base or base.endswith('.part'):
         return False
-    alvo = _prefixo_aula(page_order, lesson_name).lower()
-    if base.startswith(alvo):
-        return True
+    for alvo in (
+        _prefixo_aula(page_order, lesson_name).lower(),
+        _prefixo_aula_legado(page_order, lesson_name),
+    ):
+        if base.startswith(alvo):
+            return True
     slug_aula = slugify(lesson_name)
     slug_arq = slugify(os.path.splitext(basename)[0])
     if slug_aula and len(slug_aula) >= 8 and slug_aula in slug_arq:
@@ -271,20 +274,61 @@ def _nome_arquivo_seguro(nome):
     return re.sub(r'[<>:"/\\|?*]', '', (nome or '')).strip()
 
 
+_NOMES_RESERVADOS_WINDOWS = frozenset(
+    ['CON', 'PRN', 'AUX', 'NUL']
+    + [f'COM{i}' for i in range(1, 10)]
+    + [f'LPT{i}' for i in range(1, 10)]
+)
+NOME_MAX_CARACTERES = 120
+
+
+def _nome_fiel(nome, max_len=NOME_MAX_CARACTERES):
+    """
+    Nome legível para pasta/arquivo, fiel ao título original (acentos,
+    maiúsculas e espaços). Só troca o que o sistema de arquivos não aceita:
+    | / \\ : viram ' - ' e < > " ? * são removidos.
+    """
+    texto = unicodedata.normalize('NFC', str(nome or ''))
+    texto = re.sub(r'[\x00-\x1f\x7f]', '', texto)
+    texto = re.sub(r'\s*[|/\\:]\s*', ' - ', texto)
+    texto = re.sub(r'[<>"?*]', '', texto)
+    texto = re.sub(r'\s+', ' ', texto)
+    texto = re.sub(r'(?:\s-)+\s', ' - ', texto)
+    texto = texto.strip(' .-')
+    if max_len and len(texto) > max_len:
+        texto = texto[:max_len].rstrip(' .-')
+    if texto.split('.')[0].upper() in _NOMES_RESERVADOS_WINDOWS:
+        texto += '_'
+    return texto
+
+
 def _prefixo_aula(page_order, lesson_name):
-    return f"{slugify(str(page_order))}.{slugify(lesson_name)}"
+    return f"{page_order} - {_nome_fiel(lesson_name)}"
+
+
+def _prefixo_aula_legado(page_order, lesson_name):
+    """Prefixo em slug usado até a v1.1.2 (ex.: 8.yakissoba)."""
+    return f"{slugify(str(page_order))}.{slugify(_nome_arquivo_seguro(lesson_name))}"
+
+
+def _nome_pasta_topico(module_order, module_name):
+    return f"{module_order} - {_nome_fiel(module_name)}"
+
+
+def _nome_pasta_topico_legado(module_order, module_name):
+    return f"{slugify(str(module_order))}_{slugify(_nome_arquivo_seguro(module_name))}"
 
 
 def _pasta_aula_legada(folder_topico, page_order, lesson_name):
     """Layout antigo: subpasta por aula (compatível ao pular re-download)."""
-    return os.path.join(folder_topico, _prefixo_aula(page_order, lesson_name))
+    return os.path.join(folder_topico, _prefixo_aula_legado(page_order, lesson_name))
 
 
 def _caminho_video_no_topico(folder_topico, page_order, lesson_name, indice_video, total_videos=1):
     """Vídeos direto na pasta do tópico/módulo."""
     prefix = _prefixo_aula(page_order, lesson_name)
     if total_videos > 1:
-        return os.path.join(folder_topico, f'{prefix}-v{indice_video}.mp4')
+        return os.path.join(folder_topico, f'{prefix} (vídeo {indice_video}).mp4')
     return os.path.join(folder_topico, f'{prefix}.mp4')
 
 
@@ -300,22 +344,111 @@ def _pasta_materiais_topico(folder_topico):
 def _caminho_anexo_aula(folder_topico, page_order, lesson_name, anexo_nome):
     return os.path.join(
         _pasta_materiais_topico(folder_topico),
-        f'{_prefixo_aula(page_order, lesson_name)}_{anexo_nome}',
+        f'{_prefixo_aula(page_order, lesson_name)} - {anexo_nome}',
     )
 
 
 def _caminho_gdrive_aula(folder_topico, page_order, lesson_name, file_id):
     return os.path.join(
         _pasta_materiais_topico(folder_topico),
-        f'{_prefixo_aula(page_order, lesson_name)}_gdrive_{file_id}.pdf',
+        f'{_prefixo_aula(page_order, lesson_name)} - gdrive_{file_id}.pdf',
     )
 
 
 def _caminho_links_aula(folder_topico, page_order, lesson_name):
     return os.path.join(
         _pasta_materiais_topico(folder_topico),
-        f'{_prefixo_aula(page_order, lesson_name)}-links.txt',
+        f'{_prefixo_aula(page_order, lesson_name)} - links.txt',
     )
+
+
+def _sufixo_legado_para_atual(resto):
+    """Converte o que vem depois do prefixo antigo para o padrão atual."""
+    m = re.fullmatch(r'-v(\d+)\.mp4', resto, re.I)
+    if m:
+        return f' (vídeo {m.group(1)}).mp4'
+    if resto.startswith('.'):
+        return resto
+    if resto.startswith(('-', '_')):
+        return f' - {resto[1:]}'
+    return None
+
+
+def _migrar_nomes_legados_topico(folder_topico, aulas_topico, first_folder):
+    """
+    Renomeia arquivos baixados por versões anteriores (ex.: 8.yakissoba.mp4)
+    para o padrão atual (8 - Yakissoba.mp4), evitando baixar tudo de novo.
+    """
+    pastas = [
+        folder_topico,
+        os.path.join(folder_topico, 'descricoes'),
+        _pasta_materiais_topico(folder_topico),
+    ]
+    arquivos = {}
+    for pasta in pastas:
+        try:
+            arquivos[pasta] = [
+                n for n in os.listdir(pasta)
+                if not n.startswith('._') and os.path.isfile(os.path.join(pasta, n))
+            ]
+        except OSError:
+            continue
+
+    pares = []
+    for aula in aulas_topico:
+        antigo = _prefixo_aula_legado(aula[0], aula[1])
+        novo = _prefixo_aula(aula[0], aula[1])
+        if antigo != novo:
+            pares.append((antigo, novo))
+    # prefixos mais longos primeiro: "1.aula-extra" não pode ser capturado por "1.aula"
+    pares.sort(key=lambda p: len(p[0]), reverse=True)
+
+    renomeados = 0
+    usados = set()
+    for antigo, novo in pares:
+        for pasta, nomes in arquivos.items():
+            for nome in nomes:
+                if (pasta, nome) in usados or '.part.' in nome.lower():
+                    continue
+                if not nome.lower().startswith(antigo) or len(nome) == len(antigo):
+                    continue
+                sufixo = _sufixo_legado_para_atual(nome[len(antigo):])
+                if sufixo is None:
+                    continue
+                usados.add((pasta, nome))
+                destino = os.path.join(pasta, novo + sufixo)
+                if os.path.exists(destino):
+                    continue
+                try:
+                    os.rename(os.path.join(pasta, nome), destino)
+                    renomeados += 1
+                except OSError as e:
+                    loga(first_folder, "WARN", f"Não renomeou {nome}: {e}")
+    if renomeados:
+        loga(
+            first_folder, "INFO",
+            f"{renomeados} arquivo(s) renomeado(s) para o padrão atual em {folder_topico}",
+        )
+    return renomeados
+
+
+def _migrar_pasta_legada(destino, candidatos_legados, first_folder):
+    """Renomeia a pasta antiga (slug) para o nome atual, se só a antiga existir."""
+    if os.path.isdir(destino):
+        return False
+    pai = os.path.dirname(destino)
+    for nome in candidatos_legados:
+        origem = os.path.join(pai, nome)
+        if nome and os.path.normpath(origem) != os.path.normpath(destino) and os.path.isdir(origem):
+            try:
+                os.rename(origem, destino)
+            except OSError as e:
+                loga(first_folder, "WARN", f"Não renomeou a pasta {origem}: {e}")
+                return False
+            loga(first_folder, "INFO", f"Pasta renomeada: {origem} -> {destino}")
+            _print_seguro(f"  Pasta renomeada para o novo padrão: {os.path.basename(destino)}")
+            return True
+    return False
 
 
 def _caminho_video_padrao(pasta_aula_legada, indice):
@@ -358,7 +491,7 @@ def _video_ja_baixado(
             candidatos.append(os.path.join(legado, f'{slugify(safe)}.mp4'))
             candidatos.append(os.path.join(
                 folder_topico,
-                f'{_prefixo_aula(page_order, lesson_name)}-{slugify(safe)}.mp4',
+                f'{_prefixo_aula(page_order, lesson_name)} - {slugify(safe)}.mp4',
             ))
 
     vistos = set()
@@ -687,7 +820,7 @@ def _montar_registro_aula(item, aula_payload):
     page = item['page']
     registro = [
         page['pageOrder'],
-        _nome_arquivo_seguro(page['name']),
+        (page.get('name') or '').strip(),
         page['hash'],
         {'videos': []},
         {'anexos': []},
@@ -2082,6 +2215,7 @@ USER_AGENT = (
 )
 
 CLUB_API = 'https://api-club.hotmart.com/hot-club-api/rest/v3'
+PURCHASE_API = 'https://api-hub.cb.hotmart.com/club-drive-api/rest/v2/purchase/'
 CLUB_CONSUMER_GW = (
     'https://api-club-course-consumption-gateway-ga.cb.hotmart.com'
 )
@@ -2176,30 +2310,98 @@ def _sanitizar_nome_curso(nome):
     return re.sub(r'[<>:"/\\|?*]', '', str(nome)).strip()
 
 
+def _nome_curso_configurado(subdomain, product_id=None):
+    try:
+        from config_cursos import CURSOS_NOMES
+    except (ImportError, AttributeError):
+        return None
+    if not isinstance(CURSOS_NOMES, dict):
+        return None
+    for chave in (product_id, str(product_id) if product_id else None, subdomain):
+        if chave and CURSOS_NOMES.get(chave):
+            return str(CURSOS_NOMES[chave]).strip()
+    return None
+
+
+def _listar_compras(session):
+    """Produtos comprados (id, name, hotmartClub.slug); cache por sessão."""
+    cache = getattr(session, '_hotmart_compras', None)
+    if cache is not None:
+        return cache
+    produtos = []
+    try:
+        resp = requests.get(
+            PURCHASE_API,
+            params={'archived': 'UNARCHIVED'},
+            headers={
+                'authorization': session.headers.get('authorization', ''),
+                'user-agent': USER_AGENT,
+                'accept': 'application/json, text/plain, */*',
+                'origin': 'https://consumer.hotmart.com',
+                'referer': 'https://consumer.hotmart.com/',
+            },
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            for compra in resp.json().get('data') or []:
+                produto = compra.get('product') or {}
+                if produto.get('id') and produto.get('name'):
+                    produtos.append(produto)
+        else:
+            loga(".", "DEBUG", f"API de compras respondeu HTTP {resp.status_code}")
+    except Exception as e:
+        loga(".", "DEBUG", f"API de compras indisponível: {e}")
+    session._hotmart_compras = produtos
+    return produtos
+
+
+def _nome_produto_por_compras(session, subdomain, product_id=None):
+    produtos = _listar_compras(session)
+    if product_id:
+        for produto in produtos:
+            if str(produto.get('id')) == str(product_id):
+                return produto['name'].strip()
+    por_slug = [
+        p for p in produtos
+        if (p.get('hotmartClub') or {}).get('slug') == subdomain
+    ]
+    if len(por_slug) == 1:
+        return por_slug[0]['name'].strip()
+    if len(por_slug) > 1:
+        loga(
+            ".", "WARN",
+            f"Club '{subdomain}' tem {len(por_slug)} produtos; defina o ID em "
+            "CURSOS_PRODUCT_IDS para usar o nome correto.",
+        )
+    return None
+
+
+def _nomes_legados_pasta_curso(subdomain, nome_atual, navegacao=None):
+    """Nomes de pasta (slug) gerados por versões anteriores para o mesmo curso."""
+    candidatos = [slugify(nome_atual), slugify(subdomain), slugify(subdomain.replace('-', ' '))]
+    mods = (navegacao or {}).get('modules') or []
+    rotulo = ' / '.join(
+        _sanitizar_nome_curso(m.get('name', '')) for m in mods[:2] if m.get('name')
+    )
+    if rotulo:
+        candidatos.append(slugify(_sanitizar_nome_curso(
+            f"{subdomain.replace('-', ' ')} ({rotulo[:80]})"
+        )))
+    vistos = []
+    for c in candidatos:
+        if c and c not in vistos:
+            vistos.append(c)
+    return vistos
+
+
 def _obter_nome_curso(session, subdomain, product_id=None):
     product_id = product_id or _product_id_por_subdominio(subdomain)
-    if product_id:
-        try:
-            _aplicar_headers_consumidor(session, product_id, subdomain)
-            st = session.get(
-                f'{CLUB_CONSUMER_GW}/v1/user/{product_id}/status',
-                timeout=30,
-            )
-            if st.status_code == 200 and st.json().get('active'):
-                nav = _get_navigation_json(session, subdomain, product_id)
-                mods = nav.get('modules') or []
-                if mods:
-                    rotulo = ' / '.join(
-                        _sanitizar_nome_curso(m.get('name', ''))
-                        for m in mods[:2]
-                        if m.get('name')
-                    )
-                    if rotulo:
-                        return _sanitizar_nome_curso(
-                            f"{subdomain.replace('-', ' ')} ({rotulo[:80]})"
-                        )
-        except Exception as e:
-            loga(".", "DEBUG", f"Nome via consumption-gateway: {e}")
+    nome = _nome_curso_configurado(subdomain, product_id)
+    if nome:
+        return nome
+    nome = _nome_produto_por_compras(session, subdomain, product_id)
+    if nome:
+        return nome
 
     _aplicar_headers_club(session, subdomain)
     for url in (
@@ -2214,10 +2416,10 @@ def _obter_nome_curso(session, subdomain, product_id=None):
             for key in ('name', 'title', 'productName', 'clubName', 'productTitle'):
                 val = data.get(key)
                 if val:
-                    return _sanitizar_nome_curso(val)
+                    return str(val).strip()
         except Exception as e:
             loga(".", "DEBUG", f"Nome do curso via {url}: {e}")
-    fallback = _sanitizar_nome_curso(subdomain.replace('-', ' '))
+    fallback = subdomain.replace('-', ' ')
     loga(".", "WARN", f"Nome do curso não veio da API; usando '{fallback}'")
     return fallback
 
@@ -2584,15 +2786,12 @@ def listacursos(authMart, params):
     for i, curso in enumerate(cursosValidos, start=1):
         print(f"{i}. {curso['nome']}")
     opcao = int(input('Qual curso deseja baixar?\n')) - 1
-    nmcurso = slugify(cursosValidos[opcao]['nome'])
+    nmcurso = _nome_fiel(cursosValidos[opcao]['nome']) or 'Curso'
 
     loga(".", "INFO", f"Iniciando download do curso {nmcurso}")
     loga(".", "INFO", f"{cursosValidos[opcao]}")
     desempenho = _carregar_desempenho()
     _limpar_cache_paginas()
-    first_folder = f'Cursos/{nmcurso}'
-    if not os.path.exists(first_folder):
-        os.makedirs(first_folder)
     dominio = cursosValidos[opcao]['resource']['subdomain']
     product_id = cursosValidos[opcao]['resource'].get('product_id')
     authMart.hotmart_subdomain = dominio
@@ -2600,6 +2799,14 @@ def listacursos(authMart, params):
     curso = _get_navigation_json(
         authMart, dominio, authMart.hotmart_product_id,
     )
+    first_folder = os.path.join('Cursos', nmcurso)
+    _migrar_pasta_legada(
+        first_folder,
+        _nomes_legados_pasta_curso(dominio, cursosValidos[opcao]['nome'], curso),
+        '.',
+    )
+    if not os.path.exists(first_folder):
+        os.makedirs(first_folder)
 
     progresso = _carregar_progresso(first_folder)
     retomar = False
@@ -2705,7 +2912,7 @@ def listacursos(authMart, params):
     )
     for item, aulas in pares_aula:
         modulo = item['module']
-        mod_name = _nome_arquivo_seguro(modulo['name'])
+        mod_name = (modulo.get('name') or '').strip()
         if modulo['moduleOrder'] not in estrutura:
             estrutura[modulo['moduleOrder']] = {mod_name: []}
         elif mod_name not in estrutura[modulo['moduleOrder']]:
@@ -2752,11 +2959,15 @@ def listacursos(authMart, params):
 
     for modulo in estrutura:
         for aulas in estrutura[modulo]:
-            folder_path = f'{first_folder}/{slugify(str(modulo))}_{slugify(aulas)}'
+            folder_path = os.path.join(first_folder, _nome_pasta_topico(modulo, aulas))
+            _migrar_pasta_legada(
+                folder_path, [_nome_pasta_topico_legado(modulo, aulas)], first_folder,
+            )
             if not os.path.exists(folder_path):
                 os.makedirs(folder_path)
 
                 loga(first_folder, "INFO", f"Criada a pasta do módulo {str(modulo)}.{aulas}")
+            _migrar_nomes_legados_topico(folder_path, estrutura[modulo][aulas], first_folder)
 
             for aula in estrutura[modulo][aulas]:
                 aula_idx = hash_para_idx.get(aula[2])

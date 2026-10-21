@@ -58,7 +58,11 @@ python hotmark.py
 - Links de leitura complementar
 - Descrições das aulas
 
-Tudo organizado por **tópico (módulo)**: vídeos na pasta do tópico (`2.nome-da-aula.mp4`), descrições em `descricoes/` e anexos em `Materiais/`.
+Tudo organizado por **tópico (módulo)**: vídeos na pasta do tópico (`2 - Nome da aula.mp4`), descrições em `descricoes/` e anexos em `Materiais/`.
+
+Os nomes seguem o que aparece no site, com acentos e maiúsculas, por exemplo `Cursos/Cozinhar é bom demais!/1 - Comece por aqui/`. Apenas caracteres que o sistema de arquivos não aceita são trocados (`|`, `/`, `\` e `:` viram ` - `; `<`, `>`, `"`, `?` e `*` são removidos). O nome do curso vem da sua lista de compras da Hotmart; para usar outro, defina `CURSOS_NOMES` em `config_cursos.py`.
+
+Downloads feitos por versões anteriores (pastas como `1_comece-por-aqui` e arquivos como `2.nome-da-aula.mp4`) são renomeados automaticamente para o novo padrão na próxima execução, sem baixar nada de novo.
 
 ## Baixar só um tópico, aula ou vídeo
 
