@@ -7,11 +7,11 @@ Log e retomada:
   - .fluid-correcao.json (estado por arquivo)
 
 Uso:
-  python corrigir_sync_pasta.py Cursos
-  python corrigir_sync_pasta.py Cursos          # retoma do JSON + pula já OK
-  python corrigir_sync_pasta.py Cursos --recomecar
-  python corrigir_sync_pasta.py Cursos --importar-log fluid-correcao-historico.log
-  python corrigir_sync_pasta.py --dry-run Cursos/
+  python scripts/corrigir_sync_pasta.py Cursos
+  python scripts/corrigir_sync_pasta.py Cursos          # retoma do JSON + pula já OK
+  python scripts/corrigir_sync_pasta.py Cursos --recomecar
+  python scripts/corrigir_sync_pasta.py Cursos --importar-log fluid-correcao-historico.log
+  python scripts/corrigir_sync_pasta.py --dry-run Cursos/
   tail -f Cursos/fluid-correcao.log
 """
 from __future__ import annotations
@@ -23,10 +23,16 @@ import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, ROOT)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path[:0] = [ROOT, os.path.join(ROOT, 'src')]
 
-import hotmark as h  # noqa: E402
+from hotmart_downloader.config import _carregar_desempenho  # noqa: E402
+from hotmart_downloader.console import _fmt_bytes  # noqa: E402
+from hotmart_downloader.midia import (  # noqa: E402
+    _corrigir_fluidao_video,
+    _fracao_pts_irregulares,
+    _remux_sincronizar_av,
+)
 
 DEFAULT_CURSOS = os.path.join(ROOT, 'Cursos')
 PROGRESS_NAME = '.fluid-correcao.json'
@@ -48,7 +54,7 @@ def _listar_mp4(pasta: str) -> list[str]:
 
 
 def _cfg_fluidao():
-    des = h._carregar_desempenho()
+    des = _carregar_desempenho()
     return {
         'crf': des['fluidao_crf'],
         'preset': des['fluidao_preset'],
@@ -399,7 +405,7 @@ def main() -> int:
             f'pulados={prog.get("pulados", 0)}, falhas={prog.get("falhas", 0)}'
         )
         print(f'Histórico anexado em: {_log_path(pasta)}')
-        print(f'\nPróximo passo:\n  .venv/bin/python corrigir_sync_pasta.py "{pasta}"')
+        print(f'\nPróximo passo:\n  .venv/bin/python scripts/corrigir_sync_pasta.py "{pasta}"')
         return 0
 
     cfg = _cfg_fluidao()
@@ -439,7 +445,7 @@ def main() -> int:
     for i, path in enumerate(videos, start=1):
         rel = os.path.relpath(path, pasta)
         if args.dry_run:
-            ir = h._fracao_pts_irregulares(path)
+            ir = _fracao_pts_irregulares(path)
             rec = itens_prog.get(rel)
             st = rec.get('status') if rec else '-'
             print(f'  {i:3d}. {rel}  (irregular ~{ir:.0%}, progresso={st})')
@@ -463,7 +469,7 @@ def main() -> int:
             )
             continue
 
-        ir_probe = h._fracao_pts_irregulares(path)
+        ir_probe = _fracao_pts_irregulares(path)
         if rec and rec.get('status') in ('erro', 'erro_parcial') and not args.forcar:
             _log_arquivo(
                 pasta,
@@ -490,16 +496,16 @@ def main() -> int:
             ir_antes = ir_probe
             fluido = False
             if cfg['fluidao'] and not args.sem_fluido:
-                fluido = h._corrigir_fluidao_video(
+                fluido = _corrigir_fluidao_video(
                     path, pasta,
                     crf=cfg['crf'], preset=cfg['preset'],
                     limiar_irregular=cfg['limiar'],
                     forcar=args.forcar or ir_antes >= cfg['limiar'],
                 )
             if cfg['sync'] and not args.sem_sync and not fluido:
-                h._remux_sincronizar_av(path, pasta)
+                _remux_sincronizar_av(path, pasta)
             depois = os.path.getsize(path)
-            ir_depois = h._fracao_pts_irregulares(path)
+            ir_depois = _fracao_pts_irregulares(path)
 
             precisava = _precisa_fluido(ir_antes, cfg['limiar'], cfg, args.sem_fluido)
             if precisava and ir_depois >= cfg['limiar']:
@@ -532,7 +538,7 @@ def main() -> int:
                 )
                 _log_arquivo(
                     pasta,
-                    f'         OK  {h._fmt_bytes(antes)} → {h._fmt_bytes(depois)}'
+                    f'         OK  {_fmt_bytes(antes)} → {_fmt_bytes(depois)}'
                     f'  | irregular {ir_antes:.0%}→{ir_depois:.0%}'
                     + ('  [fluido]' if fluido else ''),
                 )
@@ -570,7 +576,7 @@ def main() -> int:
         if falhas:
             print(
                 f'Libere espaço em disco e rode de novo:\n'
-                f'  .venv/bin/python corrigir_sync_pasta.py "{pasta}"'
+                f'  .venv/bin/python scripts/corrigir_sync_pasta.py "{pasta}"'
             )
     return 1 if falhas else 0
 

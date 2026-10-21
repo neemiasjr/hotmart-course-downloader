@@ -48,5 +48,5 @@ FLUIDAO_CRF = 20
 FLUIDAO_PRESET = "faster"
 FLUIDAO_LIMIAR_IRREGULAR = 0.08
 
-# Correção em lote: python corrigir_sync_pasta.py Cursos
+# Correção em lote: python scripts/corrigir_sync_pasta.py Cursos
 # Log: Cursos/fluid-correcao.log | retomada: Cursos/.fluid-correcao.json

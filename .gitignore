@@ -3,6 +3,8 @@
 __pycache__/
 .idea/
 .DS_Store
+._*
+.pytest_cache/
 
 # Downloads e logs locais (não versionar)
 Cursos/
