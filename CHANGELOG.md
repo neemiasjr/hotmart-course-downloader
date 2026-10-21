@@ -5,6 +5,37 @@ Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.2.0] - 2026-10-21
+
+### Corrigido
+
+- Nome do curso capturado errado: era montado com o subdomínio do club e os
+  nomes dos dois primeiros módulos (ex.: `frazao-e-vini-comece-por-aqui-se-organize-com-o-metodo-certo`
+  em vez de `Cozinhar é bom demais!`) ([#1]). Agora o nome vem da API de
+  compras da Hotmart, o mesmo exibido no site.
+
+### Alterado
+
+- Pastas e arquivos com nomes fiéis ao título original, com acentos,
+  maiúsculas e espaços ([#1]):
+  - curso: `Cursos/Cozinhar é bom demais!`
+  - tópico: `1 - Comece por aqui` (antes `1_comece-por-aqui`)
+  - vídeo: `8 - Yakissoba.mp4` (antes `8.yakissoba.mp4`); aulas com vários
+    vídeos: `8 - Yakissoba (vídeo 2).mp4`
+  - descrição, anexos e links: `8 - Yakissoba.html`,
+    `8 - Yakissoba - apostila.pdf`, `8 - Yakissoba - links.txt`
+- Só caracteres que o sistema de arquivos não aceita são trocados: `|`, `/`,
+  `\` e `:` viram ` - `; `<`, `>`, `"`, `?` e `*` são removidos. Nomes
+  reservados do Windows (`CON`, `NUL`...) são evitados e nomes muito longos
+  são encurtados para 120 caracteres.
+
+### Adicionado
+
+- Migração automática: pastas e arquivos baixados por versões anteriores são
+  renomeados para o novo padrão na próxima execução, sem baixar nada de novo.
+- Opção `CURSOS_NOMES` em `config_cursos.py` para definir manualmente o nome
+  da pasta de um curso (por subdomínio ou product ID).
+
 ## [1.1.2] - 2026-10-21
 
 ### Corrigido
@@ -79,7 +110,9 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   autenticação Bearer e download por escopo (módulos, tópicos e aulas).
 - Baseado no gist original de @juvenal, com melhorias locais.
 
+[#1]: https://github.com/neemiasjr/hotmart-course-downloader/issues/1
 [#2]: https://github.com/neemiasjr/hotmart-course-downloader/issues/2
+[1.2.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.0.2...v1.1.0
