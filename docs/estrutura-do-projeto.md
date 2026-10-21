@@ -34,7 +34,7 @@ montar a estrutura de aulas e processar cada aula.
 | `hls.py` | escolha da variante HLS e download de vídeo da Hotmart |
 | `ffmpeg.py` | execução do ffmpeg com barra de progresso e detecção de travamento |
 | `midia.py` | ffprobe, duração, correção de sincronia e de fluidez |
-| `externos.py` | YouTube/Vimeo (youtube_dl) e PDFs do Google Drive |
+| `externos.py` | YouTube/Vimeo (yt-dlp ou youtube_dl) e PDFs do Google Drive |
 | `materiais.py` | anexos, PDFs do Google Drive e links de cada aula |
 | `verificacao.py` | decide se vídeo, anexo ou aula já estão completos na pasta |
 | `caminhos.py` | caminhos de saída e arquivos `.part` |

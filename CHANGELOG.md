@@ -5,6 +5,22 @@ Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.5.0] - 2026-10-21
+
+### Adicionado
+
+- Vídeos do YouTube e do Vimeo encontrados na API da aula e no conteúdo
+  (iframes e links), inclusive em aulas que também têm vídeo da Hotmart; os
+  externos são numerados depois dos da Hotmart.
+- Download de vídeos externos com `yt-dlp` (biblioteca ou comando), com
+  `youtube_dl` como alternativa, e barra de progresso ao vivo.
+- `yt-dlp` no `requirements.txt`.
+
+### Alterado
+
+- Uma aula só é considerada completa na pasta quando os vídeos externos
+  citados na descrição também foram baixados.
+
 ## [1.4.0] - 2026-10-21
 
 ### Alterado
@@ -165,6 +181,7 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 [#1]: https://github.com/neemiasjr/hotmart-course-downloader/issues/1
 [#2]: https://github.com/neemiasjr/hotmart-course-downloader/issues/2
+[1.5.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.2...v1.2.0

@@ -34,7 +34,7 @@ course, define the scope, build the lesson structure and process each lesson.
 | `hls.py` | HLS variant selection and Hotmart video download |
 | `ffmpeg.py` | runs ffmpeg with a progress bar and stall detection |
 | `midia.py` | ffprobe, duration, audio sync and smoothness fixes |
-| `externos.py` | YouTube/Vimeo (youtube_dl) and Google Drive PDFs |
+| `externos.py` | YouTube/Vimeo (yt-dlp or youtube_dl) and Google Drive PDFs |
 | `materiais.py` | attachments, Google Drive PDFs and links of each lesson |
 | `verificacao.py` | decides whether a video, attachment or lesson is already complete in the folder |
 | `caminhos.py` | output paths and `.part` files |

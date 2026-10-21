@@ -13,7 +13,7 @@ from .caminhos import (
     _caminho_video_padrao,
     _pasta_aula_legada,
 )
-from .externos import extrair_google_drive_urls
+from .externos import _listar_links_video_externo, extrair_google_drive_urls
 from .midia import _dimensoes_video_local, _duracao_mp4_local, _mp4_valido_ffprobe
 from .nomes import _nome_arquivo_corresponde_aula, _nome_arquivo_seguro, _prefixo_aula, slugify
 
@@ -142,19 +142,41 @@ def _aula_ja_completa_na_pasta(folder_topico, aula, verificar_completo=False):
             if not pronto:
                 return False
     else:
-        mp4_prontos = [
-            p for p in glob.glob(os.path.join(folder_topico, '*.mp4'))
-            if _nome_arquivo_corresponde_aula(os.path.basename(p), page_order, lesson_name)
-            and _video_arquivo_pronto(p, verificar_completo)
-        ]
-        if not mp4_prontos:
+        desc_html = ''
+        for path in (descricao_path, descricao_legada):
+            if _arquivo_pronto(path, min_bytes=32):
+                try:
+                    with open(path, encoding='utf-8') as desc_f:
+                        desc_html = desc_f.read()
+                except OSError:
+                    pass
+                break
+        links_externos = _listar_links_video_externo(desc_html, videos, None)
+        if links_externos:
+            tem_algo = True
+            total_ext = len(links_externos)
+            for indice in range(1, total_ext + 1):
+                pronto, _ = _video_ja_baixado(
+                    folder_topico, page_order, lesson_name, indice,
+                    None, total_videos=total_ext,
+                    verificar_completo=verificar_completo,
+                )
+                if not pronto:
+                    return False
+        else:
             mp4_prontos = [
-                p for p in glob.glob(os.path.join(legado, '*.mp4'))
+                p for p in glob.glob(os.path.join(folder_topico, '*.mp4'))
                 if _nome_arquivo_corresponde_aula(os.path.basename(p), page_order, lesson_name)
                 and _video_arquivo_pronto(p, verificar_completo)
             ]
-        if mp4_prontos:
-            tem_algo = True
+            if not mp4_prontos:
+                mp4_prontos = [
+                    p for p in glob.glob(os.path.join(legado, '*.mp4'))
+                    if _nome_arquivo_corresponde_aula(os.path.basename(p), page_order, lesson_name)
+                    and _video_arquivo_pronto(p, verificar_completo)
+                ]
+            if mp4_prontos:
+                tem_algo = True
 
     if aula[4]['anexos']:
         tem_algo = True
