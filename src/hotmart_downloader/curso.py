@@ -10,9 +10,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-import youtube_dl
-from bs4 import BeautifulSoup
-
 from .api import (
     _get_navigation_json,
     _get_page_json,
@@ -29,7 +26,7 @@ from .caminhos import (
 from .config import _carregar_desempenho, _cursos_subdominios, _product_id_por_subdominio
 from .console import _barra, _fmt_tempo, _print_seguro, loga
 from .estrutura import _carregar_estrutura_aulas, _contar_aulas
-from .externos import _link_video_externo_iframe, _ydl_format_por_qualidade
+from .externos import _baixar_video_externo, _listar_links_video_externo, _url_parece_video_externo
 from .hls import baixar_video_hotmart
 from .materiais import baixar_anexos_aula, baixar_gdrive_aula, salvar_links_aula
 from .midia import _dimensoes_video_local, _duracao_mp4_local
@@ -435,78 +432,50 @@ def _salvar_descricao(ctx, aula, folder_path):
         )
 
 
-def _baixar_video_iframe(ctx, link, folder_path, page_order, lesson_name, indice):
+def _baixar_videos_externos(ctx, links, folder_path, page_order, lesson_name, aula_idx, inicio, total_vids):
+    """YouTube/Vimeo da aula, numerados depois dos vídeos Hotmart."""
     first_folder = ctx.first_folder
-    destino_video = _caminho_video_no_topico(
-        folder_path, page_order, lesson_name, indice, total_videos=1,
-    )
-    pronto, existente = _video_ja_baixado(
-        folder_path, page_order, lesson_name, indice, total_videos=1,
-        verificar_completo=ctx.desempenho['verificar_video_completo'],
-        qualidade_desejada=ctx.qualidade_video,
-    )
-    if pronto:
-        print(f"  [OK] Aula já presente ({existente}), pulando")
-        loga(first_folder, "INFO", f"Aula externa já presente: {existente}")
-        ctx.videos_pulados += 1
-        return
-
-    _limpar_parcial(destino_video)
-    print(f"  Baixando aula externa\n\t {destino_video}")
-    ydl_opts = {
-        "format": _ydl_format_por_qualidade(ctx.qualidade_video),
-        'outtmpl': destino_video,
-        'continuedl': True,
-        'nooverwrites': False,
-    }
-    try:
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([link])
-        loga(first_folder, "INFO", "Vídeo externo baixado com sucesso.")
-    except Exception as ext_err:
-        _limpar_parcial(destino_video)
-        print(f"  Falha no vídeo externo: {ext_err}")
-        loga(first_folder, "ERROR", f"Vídeo externo: {ext_err}")
-        return
-
-    if _arquivo_pronto(destino_video):
-        ctx.contar_baixado()
-        vw, vh = _dimensoes_video_local(destino_video)
-        if vw and vh:
-            _print_seguro(f"  Resolução real: {vw}x{vh}")
-    else:
-        _limpar_parcial(destino_video)
-        print("  Vídeo externo incompleto — será tentado de novo na próxima execução")
-        loga(first_folder, "WARN", "Vídeo externo incompleto após download")
-
-
-def _baixar_videos_iframe(ctx, aula, folder_path, aula_idx):
-    """Aula sem vídeo Hotmart: procura YouTube/Vimeo nos iframes do conteúdo."""
-    first_folder = ctx.first_folder
-    loga(
-        first_folder, "WARN",
-        "Aula não continha dicionário de videos, verificando por externos, verificar se é textual",
-    )
-    try:
-        pagina = BeautifulSoup(
-            _get_page_json(ctx.authMart, aula[2])['content'], features="html.parser",
+    for x, link in enumerate(links, start=inicio):
+        if not _video_incluido_no_escopo(aula_idx, x, ctx.videos_por_aula):
+            continue
+        loga(first_folder, "INFO", f"Vídeo externo (YouTube/Vimeo): {link}")
+        destino_video = _caminho_video_no_topico(
+            folder_path, page_order, lesson_name, x, total_videos=total_vids,
         )
-        for x, iframe in enumerate(pagina.findAll("iframe"), start=1):
-            if not _video_incluido_no_escopo(aula_idx, x, ctx.videos_por_aula):
-                continue
-            src_iframe = iframe.get("src") or ""
-            if "wistia.com" in src_iframe:
-                loga(first_folder, "ERROR", f"WISTIA! Vídeo encontrado! {src_iframe}")
-                continue
-            link = _link_video_externo_iframe(src_iframe, ctx.dominio)
-            if not link:
-                continue
-            loga(first_folder, "INFO", f"Vídeo encontrado! {link}")
-            _baixar_video_iframe(ctx, link, folder_path, aula[0], aula[1], x)
-    except KeyboardInterrupt:
-        raise
-    except Exception as ext_page_err:
-        loga(first_folder, "WARN", f"Erro ao processar vídeos externos da aula: {ext_page_err}")
+        pronto, existente = _video_ja_baixado(
+            folder_path, page_order, lesson_name, x, total_videos=total_vids,
+            verificar_completo=ctx.desempenho['verificar_video_completo'],
+            qualidade_desejada=ctx.qualidade_video,
+        )
+        if pronto:
+            print(f"  [OK] Vídeo externo {x}/{total_vids} já presente ({existente}), pulando")
+            loga(first_folder, "INFO", f"Vídeo externo já presente: {existente}")
+            ctx.videos_pulados += 1
+            continue
+        print(f"  Baixando vídeo externo {x}/{total_vids} (YouTube/Vimeo)\n\t {destino_video}")
+        try:
+            _baixar_video_externo(
+                link, destino_video, first_folder, ctx.qualidade_video, ctx.dominio,
+                mostrar_progresso=ctx.opts_video['mostrar_progresso'],
+            )
+            loga(first_folder, "INFO", "Vídeo externo baixado com sucesso.")
+        except KeyboardInterrupt:
+            _limpar_parcial(destino_video)
+            raise
+        except Exception as ext_err:
+            _limpar_parcial(destino_video)
+            print(f"  Falha no vídeo externo: {ext_err}")
+            loga(first_folder, "ERROR", f"Vídeo externo: {ext_err}")
+            continue
+        if _arquivo_pronto(destino_video):
+            ctx.contar_baixado()
+            vw, vh = _dimensoes_video_local(destino_video)
+            if vw and vh:
+                _print_seguro(f"  Resolução real: {vw}x{vh}")
+        else:
+            _limpar_parcial(destino_video)
+            print("  Vídeo externo incompleto — será tentado de novo na próxima execução")
+            loga(first_folder, "WARN", "Vídeo externo incompleto após download")
 
 
 def _avisar_video_incompleto(ctx, folder_path, page_order, lesson_name, duracao_esp):
@@ -544,10 +513,8 @@ def _agendar_video_hotmart(ctx, video, destino_video, duracao_esp):
         print(f"  {e}")
 
 
-def _baixar_videos_hotmart(ctx, aula, folder_path, aula_idx):
-    page_order, lesson_name = aula[0], aula[1]
-    videos = aula[3]['videos']  # [nome, id, link, duração?]
-    total_vids = len(videos)
+def _baixar_videos_hotmart(ctx, videos, folder_path, page_order, lesson_name, aula_idx, total_vids):
+    """videos: [nome, id, link, duração?]"""
     for x, video in enumerate(videos, start=1):
         if not _video_incluido_no_escopo(aula_idx, x, ctx.videos_por_aula):
             continue
@@ -608,10 +575,31 @@ def _processar_aula(ctx, aula, folder_path, aula_atual, total_aulas):
     else:
         _salvar_descricao(ctx, aula, folder_path)
 
-    if aula[3]['videos']:
-        _baixar_videos_hotmart(ctx, aula, folder_path, aula_idx)
-    else:
-        _baixar_videos_iframe(ctx, aula, folder_path, aula_idx)
+    page_content_html = ''
+    try:
+        page_content_html = _get_page_json(ctx.authMart, aula[2]).get('content') or ''
+    except Exception:
+        pass
+    videos_api = aula[3]['videos'] or []
+    hotmart_videos = [
+        v for v in videos_api
+        if not (len(v) > 2 and _url_parece_video_externo(v[2]))
+    ]
+    links_externos = _listar_links_video_externo(page_content_html, videos_api, ctx.dominio)
+    total_vids = len(hotmart_videos) + len(links_externos)
+    if not total_vids:
+        loga(
+            ctx.first_folder, "WARN",
+            "Aula sem vídeo Hotmart na API e sem embed YouTube/Vimeo no conteúdo",
+        )
+    if hotmart_videos:
+        _baixar_videos_hotmart(
+            ctx, hotmart_videos, folder_path, page_order, lesson_name, aula_idx, total_vids,
+        )
+    _baixar_videos_externos(
+        ctx, links_externos, folder_path, page_order, lesson_name, aula_idx,
+        inicio=len(hotmart_videos) + 1, total_vids=total_vids,
+    )
 
     if so_videos:
         return

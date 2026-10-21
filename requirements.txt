@@ -1,4 +1,5 @@
 m3u8
 beautifulsoup4
 youtube_dl
+yt-dlp
 requests
