@@ -13,7 +13,7 @@ import re
 import shutil
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT = os.path.join(
     ROOT,
     'Cursos',

@@ -5,6 +5,36 @@ Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.4.0] - 2026-10-21
+
+### Alterado
+
+- Código reorganizado em pacote dentro de `src/hotmart_downloader/`, um módulo
+  por responsabilidade (autenticação, API, seleção, HLS/ffmpeg, mídia, nomes,
+  migração, materiais, progresso etc.). O antigo `hotmark.py` de 3.400 linhas
+  virou só o ponto de entrada: `python hotmark.py` e os scripts `iniciar.*`
+  funcionam como antes.
+- O fluxo de download (`listacursos`) foi dividido em etapas menores, sem
+  mudar mensagens, arquivos gerados ou a ordem das perguntas.
+- Utilitários movidos para `scripts/` (`corrigir_sync_pasta.py`,
+  `achatar_videos_modulo.py`).
+- Mapa dos módulos em `docs/estrutura-do-projeto.md`.
+
+### Adicionado
+
+- Testes automatizados em `tests/` (nomes, seleção, configuração e migração):
+  `python -m unittest`.
+- README em inglês (`README.en.md`) e mapa dos módulos em inglês
+  (`docs/estrutura-do-projeto.en.md`), com links entre as versões.
+
+### Corrigido
+
+- `config_cursos.py` sem `DOWNLOAD_PARALELO` ou `API_PARALELO` interrompia o
+  programa com `ImportError` depois de escolher o curso; agora a opção ausente
+  usa o valor padrão.
+- `AULAS_INDICES` e `AULA_VIDEO` passam a ser lidos de forma independente
+  (faltar um deles não descarta o outro).
+
 ## [1.3.0] - 2026-10-21
 
 ### Adicionado
@@ -135,6 +165,7 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 [#1]: https://github.com/neemiasjr/hotmart-course-downloader/issues/1
 [#2]: https://github.com/neemiasjr/hotmart-course-downloader/issues/2
+[1.4.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.1...v1.1.2
