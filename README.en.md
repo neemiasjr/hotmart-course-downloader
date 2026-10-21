@@ -127,7 +127,7 @@ DOWNLOAD_PARALELO = 2  # optional: 2–3 simultaneous Hotmart downloads
 
 ## Project structure
 
-The code lives in `src/hotmart_downloader/`. The root only holds `hotmark.py` (entry point), the `iniciar.*` scripts, `config_cursos.py` and the documentation. Standalone utilities are in `scripts/` (for example, `python scripts/corrigir_sync_pasta.py Cursos` fixes audio sync and smoothness of videos already downloaded) and tests are in `tests/` (`python -m unittest`). The module map is in [docs/estrutura-do-projeto.md](docs/estrutura-do-projeto.md) (Portuguese).
+The code lives in `src/hotmart_downloader/`. The root only holds `hotmark.py` (entry point), the `iniciar.*` scripts, `config_cursos.py` and the documentation. Standalone utilities are in `scripts/` (for example, `python scripts/corrigir_sync_pasta.py Cursos` fixes audio sync and smoothness of videos already downloaded) and tests are in `tests/` (`python -m unittest`). The module map is in [docs/estrutura-do-projeto.en.md](docs/estrutura-do-projeto.en.md).
 
 ## Warnings
 

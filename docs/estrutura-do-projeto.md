@@ -1,5 +1,7 @@
 # Estrutura do projeto
 
+**Português** | [English](estrutura-do-projeto.en.md)
+
 ```
 hotmark.py                 ponto de entrada (python hotmark.py)
 iniciar.sh / .command / .bat

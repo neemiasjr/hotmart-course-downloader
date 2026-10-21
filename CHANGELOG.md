@@ -24,6 +24,8 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 - Testes automatizados em `tests/` (nomes, seleção, configuração e migração):
   `python -m unittest`.
+- README em inglês (`README.en.md`) e mapa dos módulos em inglês
+  (`docs/estrutura-do-projeto.en.md`), com links entre as versões.
 
 ### Corrigido
 
