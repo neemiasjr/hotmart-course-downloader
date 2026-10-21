@@ -44,6 +44,7 @@ import glob
 import statistics
 import unicodedata
 import threading
+import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _print_lock = threading.Lock()
@@ -806,17 +807,43 @@ def _obter_duracao_media(url, headers_str):
     return None
 
 
-def _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao=None):
-    """
-    Executa ffmpeg mostrando progresso ao vivo.
-    Usa -progress pipe:1 (out_time_ms) + tamanho do arquivo parcial.
-    """
-    cmd = list(ffmpegcmd)
-    cmd[1:1] = ['-progress', 'pipe:1', '-nostats']
+FFMPEG_TIMEOUT_INATIVO = 180
+FFMPEG_RW_TIMEOUT_US = 30_000_000
+FFMPEG_MAX_TENTATIVAS_TRAVAMENTO = 3
 
+
+class FfmpegTravadoError(RuntimeError):
+    """ffmpeg ficou sem progresso (tempo e arquivo parados) por tempo demais."""
+
+
+def _assinatura_arquivo(path):
+    try:
+        st = os.stat(path)
+        return st.st_size, st.st_mtime_ns
+    except OSError:
+        return 0, 0
+
+
+def _encerrar_processo(proc):
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _iniciar_ffmpeg(cmd, capturar_stdout=True):
+    """Popen com stdin fechado e stderr drenado em thread (evita deadlock de pipe)."""
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capturar_stdout else subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
@@ -827,15 +854,52 @@ def _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao=None):
         try:
             if proc.stderr:
                 stderr_holder.append(proc.stderr.read())
-        except OSError:
+        except (OSError, ValueError):
             pass
 
     stderr_thread = threading.Thread(target=_drenar_stderr, daemon=True)
     stderr_thread.start()
+    return proc, stderr_holder, stderr_thread
+
+
+def _rodar_ffmpeg_com_progresso(
+    ffmpegcmd, part_path, duracao=None, timeout_inativo=FFMPEG_TIMEOUT_INATIVO,
+):
+    """
+    Executa ffmpeg mostrando progresso ao vivo.
+    Usa -progress pipe:1 (out_time_ms) + tamanho do arquivo parcial.
+    Levanta FfmpegTravadoError se nada avançar por `timeout_inativo` segundos.
+    """
+    cmd = list(ffmpegcmd)
+    cmd[1:1] = ['-progress', 'pipe:1', '-nostats']
+
+    proc, stderr_holder, stderr_thread = _iniciar_ffmpeg(cmd)
+    linhas = queue.Queue()
+
+    def _ler_stdout():
+        try:
+            for raw_line in proc.stdout:
+                linhas.put(raw_line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            linhas.put(None)
+
+    threading.Thread(target=_ler_stdout, daemon=True).start()
 
     tempo_atual = 0.0
+    ultimo_tempo = -1.0
+    ultima_assinatura = _assinatura_arquivo(part_path)
+    ultima_atividade = time.monotonic()
     try:
-        for line in proc.stdout:
+        while True:
+            try:
+                line = linhas.get(timeout=1)
+            except queue.Empty:
+                line = ''
+            if line is None:
+                break
+
             line = line.strip()
             if line.startswith('out_time_ms='):
                 raw = line.split('=', 1)[1]
@@ -853,29 +917,26 @@ def _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao=None):
                     _imprimir_progresso_linha(
                         f"  baixando {_fmt_tempo(tempo_atual)}  {_fmt_bytes(size)}    "
                     )
-            elif line == 'progress=end':
-                for _resto in proc.stdout:
-                    pass
-                break
+
+            assinatura = _assinatura_arquivo(part_path)
+            if tempo_atual != ultimo_tempo or assinatura != ultima_assinatura:
+                ultimo_tempo = tempo_atual
+                ultima_assinatura = assinatura
+                ultima_atividade = time.monotonic()
+            elif time.monotonic() - ultima_atividade > timeout_inativo:
+                _encerrar_processo(proc)
+                print()
+                raise FfmpegTravadoError(
+                    f"ffmpeg sem progresso há {timeout_inativo}s "
+                    f"(parado em {_fmt_tempo(tempo_atual)})"
+                )
         returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.kill()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
-        print()
-        raise
-    except Exception:
-        proc.kill()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
+    except BaseException:
+        _encerrar_processo(proc)
         print()
         raise
 
-    stderr_thread.join(timeout=120)
+    stderr_thread.join(timeout=30)
     stderr = stderr_holder[0] if stderr_holder else ''
 
     if returncode == 0:
@@ -888,15 +949,34 @@ def _rodar_ffmpeg_com_progresso(ffmpegcmd, part_path, duracao=None):
     return returncode, stderr
 
 
-def _rodar_ffmpeg_simples(ffmpegcmd):
-    """ffmpeg sem barra ao vivo (usado em download paralelo)."""
-    proc = subprocess.run(
-        ffmpegcmd,
-        capture_output=True,
-        text=True,
-    )
-    stderr = (proc.stderr or '').strip()
-    return proc.returncode, stderr
+def _rodar_ffmpeg_simples(ffmpegcmd, part_path, timeout_inativo=FFMPEG_TIMEOUT_INATIVO):
+    """ffmpeg sem barra ao vivo (usado em download paralelo), com watchdog de inatividade."""
+    proc, stderr_holder, stderr_thread = _iniciar_ffmpeg(ffmpegcmd, capturar_stdout=False)
+    ultima_assinatura = _assinatura_arquivo(part_path)
+    ultima_atividade = time.monotonic()
+    try:
+        while True:
+            try:
+                returncode = proc.wait(timeout=2)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            assinatura = _assinatura_arquivo(part_path)
+            if assinatura != ultima_assinatura:
+                ultima_assinatura = assinatura
+                ultima_atividade = time.monotonic()
+            elif time.monotonic() - ultima_atividade > timeout_inativo:
+                _encerrar_processo(proc)
+                raise FfmpegTravadoError(
+                    f"ffmpeg sem progresso há {timeout_inativo}s"
+                )
+    except BaseException:
+        _encerrar_processo(proc)
+        raise
+
+    stderr_thread.join(timeout=30)
+    stderr = (stderr_holder[0] if stderr_holder else '').strip()
+    return returncode, stderr
 
 
 def _asset_height(asset):
@@ -1385,23 +1465,24 @@ def baixar_video_hotmart(
     duracao_ref = duracao_esperada or duracao_hls
     duracao_barra = duracao_ref if (medir_duracao and mostrar_progresso) else duracao_ref
 
-    def _montar_ffmpegcmd(rw_timeout_us=None):
+    def _montar_ffmpegcmd(url):
         cmd = [
             'ffmpeg',
             '-hide_banner',
+            '-nostdin',
             '-loglevel', 'error',
             '-headers', headers_str,
             '-reconnect', '1',
             '-reconnect_streamed', '1',
+            '-reconnect_on_network_error', '1',
             '-reconnect_delay_max', '5',
+            '-rw_timeout', str(FFMPEG_RW_TIMEOUT_US),
             '-probesize', '32M',
             '-analyzeduration', '32M',
             '-fflags', '+genpts+discardcorrupt',
         ]
-        if rw_timeout_us:
-            cmd.extend(['-rw_timeout', str(rw_timeout_us)])
         cmd.extend([
-            '-i', hls_url,
+            '-i', url,
             '-map', '0:v:0',
             '-map', '0:a:0?',
             '-c:v', 'copy',
@@ -1418,21 +1499,46 @@ def baixar_video_hotmart(
     loga(first_folder, "INFO", "Iniciando o FFMPEG (URL assinada)")
     returncode = 1
     stderr = ''
-    for tentativa in range(2):
-        usar_barra = mostrar_progresso and tentativa == 0
-        ffmpegcmd = _montar_ffmpegcmd(
-            rw_timeout_us=60_000_000 if tentativa else None,
-        )
+    travamentos = 0
+    tentativa_incompleta = 0
+    while True:
+        ffmpegcmd = _montar_ffmpegcmd(hls_url)
         try:
-            if usar_barra:
+            if mostrar_progresso:
                 returncode, stderr = _rodar_ffmpeg_com_progresso(
                     ffmpegcmd, part_path, duracao_barra,
                 )
             else:
-                returncode, stderr = _rodar_ffmpeg_simples(ffmpegcmd)
+                returncode, stderr = _rodar_ffmpeg_simples(ffmpegcmd, part_path)
         except KeyboardInterrupt:
             loga(first_folder, "WARN", "Download interrompido pelo usuário (ffmpeg)")
             raise
+        except FfmpegTravadoError as err:
+            travamentos += 1
+            _limpar_parcial(output_path)
+            if travamentos >= FFMPEG_MAX_TENTATIVAS_TRAVAMENTO:
+                loga(first_folder, "ERROR", f"{err} — desistindo após {travamentos} tentativas")
+                raise RuntimeError(
+                    f"{err}. Desistindo após {travamentos} tentativas; "
+                    "rode o script de novo para retomar."
+                ) from err
+            loga(
+                first_folder, "WARN",
+                f"{err} — reiniciando download "
+                f"(tentativa {travamentos + 1}/{FFMPEG_MAX_TENTATIVAS_TRAVAMENTO})",
+            )
+            _print_seguro(
+                f"  {err}; reiniciando "
+                f"(tentativa {travamentos + 1}/{FFMPEG_MAX_TENTATIVAS_TRAVAMENTO})..."
+            )
+            time.sleep(3)
+            try:
+                hls_url, _ = obter_url_hls_assinada(
+                    media_src_url, video_hash, qualidade=qualidade,
+                )
+            except Exception as url_err:
+                loga(first_folder, "WARN", f"Não renovou URL HLS ({url_err}); reutilizando")
+            continue
         if returncode != 0:
             _limpar_parcial(output_path)
             detalhe = (stderr or '').strip().splitlines()[-1:]
@@ -1447,10 +1553,11 @@ def baixar_video_hotmart(
                     f"Vídeo incompleto ({_fmt_tempo(local or 0)} de "
                     f"{_fmt_tempo(duracao_ref)} esperados)"
                 )
-                if tentativa == 0:
+                if tentativa_incompleta == 0:
+                    tentativa_incompleta += 1
                     loga(first_folder, "WARN", f"{msg} — nova tentativa de download")
                     _print_seguro(f"  {msg}; tentando de novo...")
-                    _limpar_parcial(part_path)
+                    _limpar_parcial(output_path)
                     continue
                 _limpar_parcial(output_path)
                 raise RuntimeError(f"{msg}. Rode o script de novo com token válido.")
