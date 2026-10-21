@@ -16,6 +16,18 @@ A API da Hotmart mudou (2026) e agora o endpoint `check_token` retorna `resource
 - FFMPEG (precisa estar no PATH do sistema)
 - Conexão estável se for baixar vídeos
 
+## Início rápido
+
+Depois de configurar o `config_cursos.py` (passo 2 abaixo), use o script de inicialização. Ele cria o ambiente virtual (`.venv`), instala as dependências quando o `requirements.txt` muda, confere o FFmpeg e abre o programa:
+
+| Sistema | Como iniciar |
+|---|---|
+| macOS | duplo clique em `iniciar.command` ou `./iniciar.sh` no terminal |
+| Linux | `./iniciar.sh` |
+| Windows | duplo clique em `iniciar.bat` |
+
+No macOS, se o FFmpeg não estiver instalado e houver Homebrew, o script oferece instalar com `brew install ffmpeg`. Na primeira vez que abrir o `iniciar.command`, o macOS pode bloquear: clique com o botão direito → **Abrir**.
+
 ## Como usar
 
 1. Instale as dependências:
