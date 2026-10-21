@@ -5,7 +5,7 @@ Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Não publicado]
+## [1.4.0] - 2026-10-21
 
 ### Alterado
 
@@ -165,7 +165,7 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 [#1]: https://github.com/neemiasjr/hotmart-course-downloader/issues/1
 [#2]: https://github.com/neemiasjr/hotmart-course-downloader/issues/2
-[Não publicado]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.3.0...HEAD
+[1.4.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.1...v1.1.2
