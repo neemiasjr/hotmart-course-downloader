@@ -1,5 +1,7 @@
 # Hotmart Downloader
 
+**Português** | [English](README.en.md)
+
 Script pra baixar cursos da Hotmart. Baixa vídeos, PDFs e anexos embutidos.
 
 ## Origem
