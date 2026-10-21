@@ -1,5 +1,7 @@
 # Hotmart Downloader
 
+**Português** | [English](README.en.md)
+
 Script pra baixar cursos da Hotmart. Baixa vídeos, PDFs e anexos embutidos.
 
 ## Origem
@@ -122,6 +124,10 @@ DOWNLOAD_PARALELO = 2  # opcional: 2–3 downloads Hotmart simultâneos
 - Mostra progresso geral das aulas e barra ao vivo de cada vídeo (%, tempo e tamanho)
 - Vídeos incompletos (`.part.mp4`) são refeitos; só arquivos prontos são pulados
 - Cria log de tudo que faz pra você poder acompanhar
+
+## Estrutura do projeto
+
+O código fica em `src/hotmart_downloader/`. Na raiz ficam só o `hotmark.py` (ponto de entrada), os scripts `iniciar.*`, o `config_cursos.py` e a documentação. Utilitários avulsos ficam em `scripts/` (por exemplo, `python scripts/corrigir_sync_pasta.py Cursos` corrige sincronia e fluidez de vídeos já baixados) e os testes em `tests/` (`python -m unittest`). O mapa dos módulos está em [docs/estrutura-do-projeto.md](docs/estrutura-do-projeto.md).
 
 ## Avisos
 
