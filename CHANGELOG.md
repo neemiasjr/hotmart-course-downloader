@@ -5,6 +5,29 @@ Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.3.0] - 2026-10-21
+
+### Adicionado
+
+- Scripts de inicialização que preparam o ambiente e abrem o programa:
+  - `iniciar.sh` (macOS / Linux) e `iniciar.command` (duplo clique no Finder)
+  - `iniciar.bat` (Windows, duplo clique)
+- Antes de executar o `hotmark.py`, os scripts:
+  - criam o ambiente virtual `.venv` se ele não existir ou estiver quebrado
+    (ex.: projeto copiado para outro computador); exigem Python 3.8+
+  - instalam as dependências apenas quando o `requirements.txt` muda
+  - conferem FFmpeg e ffprobe; no macOS com Homebrew, oferecem
+    `brew install ffmpeg`, e nos demais sistemas mostram o comando de
+    instalação
+  - conferem se o `config_cursos.py` existe
+- `.gitattributes` para manter as quebras de linha corretas dos scripts
+  (LF em `.sh`/`.command`, CRLF em `.bat`) em qualquer sistema.
+- Seção "Início rápido" no README.
+
+### Corrigido
+
+- Quebras de linha mistas (LF/CRLF) no `README.md`.
+
 ## [1.2.0] - 2026-10-21
 
 ### Corrigido
@@ -112,6 +135,7 @@ e o projeto adota o [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 [#1]: https://github.com/neemiasjr/hotmart-course-downloader/issues/1
 [#2]: https://github.com/neemiasjr/hotmart-course-downloader/issues/2
+[1.3.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/neemiasjr/hotmart-course-downloader/compare/v1.1.0...v1.1.1
